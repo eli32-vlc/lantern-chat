@@ -39,7 +39,7 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: widget.state,
-      builder: (_, __) {
+      builder: (context, _) {
         if (!widget.state.onboarded) {
           return OnboardingPage(state: widget.state);
         }

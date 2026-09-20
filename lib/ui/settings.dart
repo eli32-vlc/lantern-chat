@@ -12,7 +12,7 @@ class SettingsTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: state,
-      builder: (context, __) => ListView(
+      builder: (context, _) => ListView(
         children: [
           const SizedBox(height: 12),
           Center(

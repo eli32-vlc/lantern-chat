@@ -244,8 +244,8 @@ class AppState extends ChangeNotifier {
         'chunk': i,
         'chunks': total,
         'data': b64,
-        if (text != null) 'text': text,
-        if (durationMs != null) 'dur': durationMs,
+        if (text case final t) 'text': t,
+        if (durationMs case final d) 'dur': d,
       });
       if (!sent) ok = false;
     }

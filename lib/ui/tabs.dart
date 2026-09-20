@@ -25,7 +25,7 @@ class ChatsTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: state,
-      builder: (_, __) {
+      builder: (context, _) {
         if (state.chats.isEmpty) {
           return Center(
             child: Padding(
@@ -54,8 +54,8 @@ class ChatsTab extends StatelessWidget {
           onRefresh: state.refreshChats,
           child: ListView.separated(
             itemCount: state.chats.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (c, i) {
+            separatorBuilder: (context, _) => const Divider(height: 1),
+            itemBuilder: (context, i) {
               final chat = state.chats[i];
               return Dismissible(
                 key: ValueKey(chat.peerId),
@@ -67,7 +67,7 @@ class ChatsTab extends StatelessWidget {
                   child: const Icon(Icons.delete, color: Colors.white),
                 ),
                 confirmDismiss: (_) async => await showDialog<bool>(
-                      context: c,
+                      context: context,
                       builder: (d) => AlertDialog(
                         title: Text('Delete chat with ${chat.peerName}?'),
                         content: const Text(
@@ -140,7 +140,7 @@ class PeersTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: state,
-      builder: (_, __) {
+      builder: (context, _) {
         final peers = state.peers;
         if (!state.engineUp) {
           return const Center(child: CircularProgressIndicator());
@@ -173,12 +173,12 @@ class PeersTab extends StatelessWidget {
           onRefresh: () => state.refreshPeers(),
           child: ListView.separated(
             itemCount: peers.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (c, i) {
+            separatorBuilder: (context, _) => const Divider(height: 1),
+            itemBuilder: (context, i) {
               final p = peers[i];
               return FutureBuilder<KnownPeer?>(
                 future: state.store.getPeer(p.id),
-                builder: (ctx, snap) {
+                builder: (context, snap) {
                   final trusted = snap.data?.trusted ?? false;
                   return ListTile(
                     leading: CircleAvatar(
@@ -195,12 +195,12 @@ class PeersTab extends StatelessWidget {
                     trailing: trusted
                         ? const Icon(Icons.chevron_right)
                         : TextButton(
-                            onPressed: () => _showTrustSheet(ctx, p),
+                            onPressed: () => _showTrustSheet(context, p),
                             child: const Text('Verify'),
                           ),
                     onTap: trusted
                         ? () => onOpen(p.id, p.name)
-                        : () => _showTrustSheet(ctx, p),
+                        : () => _showTrustSheet(context, p),
                   );
                 },
               );
@@ -211,11 +211,11 @@ class PeersTab extends StatelessWidget {
     );
   }
 
-  void _showTrustSheet(BuildContext context, peer) {
+  void _showTrustSheet(BuildContext ctx, peer) {
     showModalBottomSheet(
-      context: context,
+      context: ctx,
       showDragHandle: true,
-      builder: (_) => TrustSheet(peer: peer, state: state),
+      builder: (sheetContext) => TrustSheet(peer: peer, state: state),
     );
   }
 }

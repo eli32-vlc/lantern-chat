@@ -22,7 +22,7 @@ class LanternApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: state,
-      builder: (_, __) => MaterialApp(
+      builder: (context, _) => MaterialApp(
         title: 'Lantern',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
