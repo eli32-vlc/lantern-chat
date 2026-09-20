@@ -1,0 +1,44 @@
+name: lantern_chat
+description: "Lantern — private local WiFi chat. No accounts, no servers, no tracking."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # LAN discovery (Bonjour / mDNS — iOS-legal, no multicast entitlement needed)
+  nsd: ^5.0.1
+
+  # Local persistence & identity (on-device only)
+  sqflite: ^2.4.4
+  sqflite_common_ffi: ^2.3.6
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  shared_preferences: ^2.5.5
+
+  # Identity + transport crypto (X25519 + AES-GCM, pure Dart)
+  cryptography: ^2.9.0
+  uuid: ^4.6.0
+
+  # LAN info + permissions + multicast (Android needs runtime reqs)
+  network_info_plus: ^8.2.1
+  permission_handler: ^13.0.2
+
+  # Media: pick, capture, voice notes, share
+  image_picker: ^1.2.3
+  file_picker: ^13.1.0
+  record: ^7.1.1
+  share_plus: ^13.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
