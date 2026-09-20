@@ -223,10 +223,12 @@ class ChatStore {
   Future<List<ChatSummary>> chatSummaries() async {
     final peers = await allPeers();
     final out = <ChatSummary>[];
-    for (final peer in peers) {
+    final seen = <String>{};
+    Future<void> addSummary(String chatId, String name) async {
+      if (!seen.add(chatId)) return;
       final rows = await db.query('messages',
           where: 'chat_id = ?',
-          whereArgs: [peer.id],
+          whereArgs: [chatId],
           orderBy: 'ts DESC',
           limit: 1);
       String? lastText;
@@ -239,14 +241,28 @@ class ChatStore {
       }
       final unreadRows = await db.rawQuery(
           'SELECT COUNT(*) c FROM messages WHERE chat_id = ? AND outgoing = 0 AND delivered = 0',
-          [peer.id]);
+          [chatId]);
       out.add(ChatSummary(
-        peerId: peer.id,
-        peerName: peer.name,
+        peerId: chatId,
+        peerName: name,
         lastText: lastText,
         lastTs: lastTs,
         unread: (unreadRows.first['c'] as int?) ?? 0,
       ));
+    }
+
+    for (final peer in peers) {
+      await addSummary(peer.id, peer.name);
+    }
+    // Compat (plaintext) chats live under chat ids 'compat:<host>:<port>'
+    // with no peer row — include any that have messages.
+    final compatRows = await db.rawQuery(
+        'SELECT DISTINCT chat_id FROM messages WHERE chat_id LIKE ?',
+        ['compat:%']);
+    for (final r in compatRows) {
+      final id = r['chat_id'] as String;
+      final label = id.startsWith('compat:') ? id.substring(7) : id;
+      await addSummary(id, 'Plaintext $label');
     }
     out.sort((a, b) => (b.lastTs ?? 0).compareTo(a.lastTs ?? 0));
     return out;

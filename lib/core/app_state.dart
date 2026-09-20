@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'compat.dart';
 import 'engine.dart';
 import 'identity.dart';
 import 'protocol.dart';
@@ -97,6 +98,9 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     });
     _evtSub = engine!.events.listen(_onEvent);
+    // Plaintext compat server: stock AirChat apps inbound → stored under
+    // 'compat:<host>:<port>' chats, surfaced in the chat list.
+    AirchatCompatServer.instance.attachToStore(store, refreshChats);
     await refreshChats();
     notifyListeners();
   }
@@ -187,6 +191,29 @@ class AppState extends ChangeNotifier {
       if (p.id == id) return p;
     }
     return null;
+  }
+
+  static bool isCompatChat(String chatId) => chatId.startsWith('compat:');
+
+  /// Send on a plaintext compat chat (AirChat-style device).
+  Future<bool> sendCompatText(String chatId, String text) async {
+    final id =
+        'compat-${DateTime.now().microsecondsSinceEpoch}';
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final ok =
+        await AirchatCompatServer.instance.sendText(chatId, text);
+    await store.insertMessage(ChatMessage(
+      id: id,
+      chatId: chatId,
+      senderId: identity!.id,
+      kind: LanternMsgKind.text,
+      text: text,
+      ts: ts,
+      outgoing: true,
+      delivered: ok,
+    ));
+    await refreshChats();
+    return ok;
   }
 
   Future<bool> sendText(String peerId, String text) async {

@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:nsd/nsd.dart';
 import 'package:uuid/uuid.dart';
 
+import 'compat.dart';
 import 'diag.dart';
 import 'identity.dart';
 import 'protocol.dart';
@@ -54,6 +55,11 @@ String _txtString(Uint8List? b) =>
 /// - `payload` frames are base64 AES-GCM sealed blobs.
 /// - First contact: TOFU prompt with fingerprint; stored pin in sqlite.
 /// - Changed key for a known id => untrust + surface warning.
+///
+/// Compat: [compat] (AirchatCompatServer) runs alongside on the same port
+/// family and speaks the observed plaintext framings (lines / ndjson /
+/// lenprefix-JSON) so stock AirChat apps can message back. Compat traffic
+/// is NEVER mixed into E2EE sessions — separate events, separate UI.
 class LanEngine {
   final DeviceIdentity me;
   final ChatStore store;
@@ -248,27 +254,32 @@ class LanEngine {
   void _onInbound(Socket sock) {
     DiagLog.add('tcp',
         'inbound from ${sock.remoteAddress.address}:${sock.remotePort}');
-    final reader = FrameReader();
-    sock.listen((chunk) async {
-      try {
-        for (final frame in reader.feed(Uint8List.fromList(chunk))) {
-          DiagLog.add('tcp',
-              'inbound frame ${frame.length}B preview=${DiagLog.preview(frame, 120)}');
-          await _onFrame(sock, null, frame);
-        }
-      } catch (_) {
+    // Hand inbound sockets to the compat sniffer FIRST: if the first bytes
+    // are not Lantern framing, the compat server answers in plaintext
+    // (lines/ndjson/lenprefix) instead of dropping a "silent server".
+    CompatSniffer.route(sock, reader: FrameReader(), onLantern: (s) {
+      final reader = FrameReader();
+      s.listen((chunk) async {
         try {
-          sock.destroy();
+          for (final frame in reader.feed(Uint8List.fromList(chunk))) {
+            DiagLog.add('tcp',
+                'inbound frame ${frame.length}B preview=${DiagLog.preview(frame, 120)}');
+            await _onFrame(s, null, frame);
+          }
+        } catch (_) {
+          try {
+            s.destroy();
+          } catch (_) {}
+        }
+      }, onError: (_) {
+        try {
+          s.destroy();
         } catch (_) {}
-      }
-    }, onError: (_) {
-      try {
-        sock.destroy();
-      } catch (_) {}
-    }, onDone: () {
-      try {
-        sock.destroy();
-      } catch (_) {}
+      }, onDone: () {
+        try {
+          s.destroy();
+        } catch (_) {}
+      });
     });
   }
 
