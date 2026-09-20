@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:nsd/nsd.dart';
 import 'package:uuid/uuid.dart';
 
+import 'diag.dart';
 import 'identity.dart';
 import 'protocol.dart';
 import 'store.dart';
@@ -88,7 +89,7 @@ class LanEngine {
 
   int get port => _server?.port ?? 0;
 
-  Future<Map<String, Uint8List?>> _txt(int port) async => {
+  Future<Map<String, Uint8List?>> _txt(int p) async => {
         LanternProtocol.txtId: _txtBytes(me.id),
         LanternProtocol.txtName: _txtBytes(displayName),
         LanternProtocol.txtStatus: _txtBytes(status),
@@ -98,8 +99,10 @@ class LanEngine {
       };
 
   Future<void> start() async {
+    DiagLog.add('engine', 'start');
     _server = await ServerSocket.bind(InternetAddress.anyIPv4, 0,
         backlog: LanternProtocol.tcpBacklog);
+    DiagLog.add('engine', 'listening on port $port');
     _server!.listen(_onInbound);
 
     final svc = Service(
@@ -109,9 +112,11 @@ class LanEngine {
       txt: await _txt(port),
     );
     _reg = await register(svc);
+    DiagLog.add('mdns', 'registered ${svc.name} type=${svc.type} port=$port');
 
     _discovery = await startDiscovery(LanternProtocol.serviceType,
         autoResolve: true, ipLookupType: IpLookupType.v4);
+    DiagLog.add('mdns', 'browsing ${LanternProtocol.serviceType}');
     _discovery!.addServiceListener(_onServiceEvent);
     // seed with already-found services
     for (final s in _discovery!.services) {
@@ -134,6 +139,8 @@ class LanEngine {
   }
 
   Future<void> _onServiceEvent(Service s, ServiceStatus st) async {
+    DiagLog.add(
+        'mdns', '${st.name} name=${s.name} host=${s.host} port=${s.port}');
     if (st == ServiceStatus.lost) {
       _peers.removeWhere((_, p) => p.name == s.name);
       if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
@@ -146,16 +153,20 @@ class LanEngine {
     try {
       final txt = s.txt ?? {};
       final id = _txtString(txt[LanternProtocol.txtId]);
-      if (id.isEmpty || id == me.id) return; // ignore self
-      String? host = s.host;
+      String? rHost = s.host;
       // Prefer resolved IPv4 address when available
       if (s.addresses != null && s.addresses!.isNotEmpty) {
         final v4 = s.addresses!.where(
             (a) => a.type == InternetAddressType.IPv4 && !a.isLoopback);
-        if (v4.isNotEmpty) host = v4.first.address;
+        if (v4.isNotEmpty) rHost = v4.first.address;
       }
       final portTxt = _txtString(txt[LanternProtocol.txtPort]);
-      final port = int.tryParse(portTxt) ?? s.port ?? 0;
+      final rPort = int.tryParse(portTxt) ?? s.port ?? 0;
+      DiagLog.add('mdns',
+          'resolve name=${s.name} host=$rHost port=$rPort txtKeys=${txt.keys.join(',')}');
+      if (id.isEmpty || id == me.id) return; // ignore self
+      String? host = rHost;
+      final port = rPort;
       if (host == null || host.isEmpty || port == 0) return;
       // Skip unresolved mdns hostnames we can't dial directly
       if (host.endsWith('.local') || host.endsWith('.local.')) {
@@ -235,10 +246,14 @@ class LanEngine {
   // ---------- sockets ----------
 
   void _onInbound(Socket sock) {
+    DiagLog.add('tcp',
+        'inbound from ${sock.remoteAddress.address}:${sock.remotePort}');
     final reader = FrameReader();
     sock.listen((chunk) async {
       try {
         for (final frame in reader.feed(Uint8List.fromList(chunk))) {
+          DiagLog.add('tcp',
+              'inbound frame ${frame.length}B preview=${DiagLog.preview(frame, 120)}');
           await _onFrame(sock, null, frame);
         }
       } catch (_) {
@@ -309,7 +324,10 @@ class LanEngine {
     Map<String, dynamic> json;
     try {
       json = decodeJson(frame);
+      DiagLog.add('proto', 'frame t=${json['t']} keys=${json.keys.join(',')}');
     } catch (_) {
+      DiagLog.add('proto',
+          'non-JSON frame ${frame.length}B preview=${DiagLog.preview(frame, 160)}');
       return;
     }
     final t = json['t'] as String?;

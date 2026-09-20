@@ -3,6 +3,11 @@ import 'package:flutter/material.dart';
 
 /// Single source of truth for sizing + colors that work in both
 /// Material and Cupertino contexts, light and dark.
+///
+/// iOS-16 underline rule: inside a CupertinoPageScaffold WITHOUT a Material
+/// ancestor, Text falls back to a default style WITH yellow underlines.
+/// Every text widget in this file sets `decoration: TextDecoration.none`
+/// explicitly, and tab bodies are wrapped in Material (see home.dart).
 class L {
   static const double title = 17;
   static const double body = 15;
@@ -16,9 +21,44 @@ class L {
   static const double iconLg = 44;
   static const double bubbleMax = 0.75;
 
+  /// Plain body text: explicit color + no underline. Use everywhere instead
+  /// of a bare Text() so iOS 16 never shows yellow underlines.
+  static Text txt(String s,
+      {double size = body,
+      FontWeight weight = FontWeight.normal,
+      Color? color,
+      TextAlign? align,
+      int? maxLines,
+      TextOverflow? overflow}) {
+    return Text(s,
+        textAlign: align,
+        maxLines: maxLines,
+        overflow: overflow,
+        style: TextStyle(
+            fontSize: size,
+            fontWeight: weight,
+            color: color,
+            decoration: TextDecoration.none));
+  }
+
   /// Muted text that stays readable in dark mode.
   static Color muted(BuildContext c) =>
       Theme.of(c).colorScheme.onSurfaceVariant;
+
+  static Text muteTxt(BuildContext c, String s,
+      {double size = small,
+      TextAlign? align,
+      int? maxLines,
+      TextOverflow? overflow}) {
+    return Text(s,
+        textAlign: align,
+        maxLines: maxLines,
+        overflow: overflow,
+        style: TextStyle(
+            fontSize: size,
+            color: muted(c),
+            decoration: TextDecoration.none));
+  }
 
   /// Chat bubble backgrounds.
   static Color bubbleMe(BuildContext c) =>
@@ -42,7 +82,10 @@ class LButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final style = TextStyle(fontSize: L.body, fontWeight: FontWeight.w600);
+    final style = const TextStyle(
+        fontSize: L.body,
+        fontWeight: FontWeight.w600,
+        decoration: TextDecoration.none);
     if (L.cupertino(context)) {
       return SizedBox(
         width: double.infinity,
@@ -82,8 +125,7 @@ class LButton extends StatelessWidget {
   }
 }
 
-/// Small muted helper line. Always explicit color (no inherited grey that
-/// vanishes in dark mode), never underlined.
+/// Small muted helper line. Always explicit color, never underlined.
 class LMute extends StatelessWidget {
   final String text;
   final TextAlign align;
@@ -91,11 +133,7 @@ class LMute extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Text(
-      text,
-      textAlign: align,
-      style: TextStyle(fontSize: L.small, color: L.muted(context)),
-    );
+    return L.muteTxt(context, text, align: align);
   }
 }
 
@@ -115,12 +153,11 @@ class LEmpty extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: L.iconLg,
+            Icon(icon,
+                size: L.iconLg,
                 color: Theme.of(context).colorScheme.primary),
             const SizedBox(height: L.gap),
-            Text(title,
-                style: const TextStyle(
-                    fontSize: L.title, fontWeight: FontWeight.w600)),
+            L.txt(title, size: L.title, weight: FontWeight.w600),
             const SizedBox(height: 4),
             LMute(hint),
           ],
@@ -128,4 +165,35 @@ class LEmpty extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Show a sheet correctly on both platforms: CupertinoActionSheet-style
+/// modal on iOS (inside the tab's navigator), Material sheet on Android.
+/// Using the wrong one inside CupertinoTabView causes white screens.
+Future<T?> showCupertinoOrMaterialSheet<T>(
+    BuildContext context, Widget child) {
+  if (L.cupertino(context)) {
+    return showCupertinoModalPopup<T>(
+      context: context,
+      builder: (_) => Material(
+        type: MaterialType.transparency,
+        child: SafeArea(
+          child: Container(
+            margin: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: CupertinoColors.systemBackground.resolveFrom(context),
+              borderRadius: BorderRadius.circular(L.radius),
+            ),
+            child: child,
+          ),
+        ),
+      ),
+    );
+  }
+  return showModalBottomSheet<T>(
+    context: context,
+    useRootNavigator: true,
+    showDragHandle: true,
+    builder: (_) => child,
+  );
 }

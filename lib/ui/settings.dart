@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../core/app_state.dart';
+import 'diag_page.dart';
 import 'onboarding.dart';
 import 'theme.dart';
 
@@ -22,20 +23,17 @@ class SettingsTab extends StatelessWidget {
               children: [
                 CircleAvatar(
                   radius: 30,
-                  child: Text(
+                  child: L.txt(
                     state.displayName.isEmpty
                         ? '?'
                         : state.displayName[0].toUpperCase(),
-                    style: const TextStyle(fontSize: 22),
+                    size: 22,
                   ),
                 ),
                 const SizedBox(height: 6),
-                Text(state.displayName,
-                    style: const TextStyle(
-                        fontSize: L.title, fontWeight: FontWeight.w600)),
-                Text(state.status,
-                    style:
-                        TextStyle(fontSize: L.small, color: L.muted(context))),
+                L.txt(state.displayName,
+                    size: L.title, weight: FontWeight.w600),
+                L.muteTxt(context, state.status),
               ],
             ),
           ),
@@ -43,25 +41,29 @@ class SettingsTab extends StatelessWidget {
           ListTile(
             dense: true,
             leading: const Icon(Icons.edit_outlined, size: 22),
-            title: const Text('Name & status',
-                style: TextStyle(fontSize: L.body)),
+            title: L.txt('Name & status', size: L.body),
             onTap: () => _editProfile(context),
           ),
           ListTile(
             dense: true,
             leading: const Icon(Icons.share_outlined, size: 22),
-            title:
-                const Text('Share', style: TextStyle(fontSize: L.body)),
+            title: L.txt('Share', size: L.body),
             onTap: () => SharePlus.instance.share(ShareParams(
                 text: 'Lantern — private WiFi chat.')),
           ),
           ListTile(
             dense: true,
+            leading: const Icon(Icons.bug_report_outlined, size: 22),
+            title: L.txt('Diagnostics', size: L.body),
+            subtitle: L.muteTxt(context, 'Connection log'),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => const DiagPage())),
+          ),
+          ListTile(
+            dense: true,
             leading: const Icon(Icons.info_outline, size: 22),
-            title:
-                const Text('About', style: TextStyle(fontSize: L.body)),
-            subtitle: Text('Version 0.1.0',
-                style: TextStyle(fontSize: L.small, color: L.muted(context))),
+            title: L.txt('About', size: L.body),
+            subtitle: L.muteTxt(context, 'Version 0.1.0'),
             onTap: () => showAboutDialog(
               context: context,
               applicationName: 'Lantern',
@@ -79,7 +81,7 @@ class SettingsTab extends StatelessWidget {
     showDialog(
       context: context,
       builder: (d) => AlertDialog(
-        title: const Text('Profile', style: TextStyle(fontSize: L.title)),
+        title: L.txt('Profile', size: L.title),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -104,14 +106,14 @@ class SettingsTab extends StatelessWidget {
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(d),
-              child: const Text('Cancel')),
+              child: L.txt('Cancel', size: L.body)),
           FilledButton(
             onPressed: () async {
               if (name.text.trim().isEmpty) return;
               Navigator.pop(d);
               await state.updateProfile(name.text, status);
             },
-            child: const Text('Save'),
+            child: L.txt('Save', size: L.body, weight: FontWeight.w600),
           ),
         ],
       ),

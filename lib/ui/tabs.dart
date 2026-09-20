@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
@@ -9,6 +8,7 @@ import '../core/identity.dart';
 import '../core/interop.dart';
 import '../core/permissions.dart';
 import '../core/store.dart';
+import 'interop_chat.dart';
 import 'theme.dart';
 
 class ChatsTab extends StatelessWidget {
@@ -59,15 +59,15 @@ class ChatsTab extends StatelessWidget {
                     await showDialog<bool>(
                       context: context,
                       builder: (d) => AlertDialog(
-                        title: Text('Delete chat with ${chat.peerName}?',
-                            style: const TextStyle(fontSize: L.title)),
+                        title: L.txt('Delete chat with ${chat.peerName}?',
+                            size: L.title),
                         actions: [
                           TextButton(
                               onPressed: () => Navigator.pop(d, false),
-                              child: const Text('Cancel')),
+                              child: L.txt('Cancel', size: L.body)),
                           TextButton(
                               onPressed: () => Navigator.pop(d, true),
-                              child: const Text('Delete')),
+                              child: L.txt('Delete', size: L.body)),
                         ],
                       ),
                     ) ??
@@ -82,31 +82,29 @@ class ChatsTab extends StatelessWidget {
                       horizontal: L.pad, vertical: 4),
                   leading: CircleAvatar(
                     radius: 20,
-                    child: Text(
+                    child: L.txt(
                       chat.peerName.isEmpty
                           ? '?'
                           : chat.peerName[0].toUpperCase(),
-                      style: const TextStyle(fontSize: L.title),
+                      size: L.title,
                     ),
                   ),
-                  title: Text(chat.peerName,
+                  title: L.txt(chat.peerName,
+                      size: L.body,
+                      weight: FontWeight.w600,
                       maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: L.body, fontWeight: FontWeight.w600)),
-                  subtitle: Text(chat.lastText ?? 'Say hello',
+                      overflow: TextOverflow.ellipsis),
+                  subtitle: L.muteTxt(
+                      context, chat.lastText ?? 'Say hello',
                       maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: L.small, color: L.muted(context))),
+                      overflow: TextOverflow.ellipsis),
                   trailing: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       if (chat.lastTs != null)
-                        Text(_ago(chat.lastTs!),
-                            style: TextStyle(
-                                fontSize: L.tiny, color: L.muted(context))),
+                        L.txt(_ago(chat.lastTs!),
+                            size: L.tiny, color: L.muted(context)),
                       if (chat.unread > 0)
                         Container(
                           margin: const EdgeInsets.only(top: 2),
@@ -116,9 +114,8 @@ class ChatsTab extends StatelessWidget {
                             color: Theme.of(context).colorScheme.primary,
                             borderRadius: BorderRadius.circular(10),
                           ),
-                          child: Text('${chat.unread}',
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: L.tiny)),
+                          child: L.txt('${chat.unread}',
+                              size: L.tiny, color: Colors.white),
                         ),
                     ],
                   ),
@@ -187,8 +184,14 @@ class _PeersTabState extends State<PeersTab> {
       builder: (context, _) {
         final st = widget.state;
         if (_checking || !st.engineUp) {
+          // Material spinner: CupertinoActivityIndicator inside a Material
+          // list context can paint blank on iOS 16; the Material spinner
+          // renders everywhere because tab bodies have a Material ancestor.
           return const Center(
-              child: CupertinoActivityIndicator(radius: 14));
+              child: SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2.5)));
         }
         final peers = st.peers;
         return RefreshIndicator(
@@ -217,13 +220,8 @@ class _PeersTabState extends State<PeersTab> {
                       state: st,
                       index: i,
                       onOpen: widget.onOpen,
-                      onVerify: (ctx, p) => showModalBottomSheet(
-                            context: ctx,
-                            useRootNavigator: true,
-                            showDragHandle: true,
-                            builder: (_) =>
-                                TrustSheet(peer: p, state: st),
-                          )),
+                      onVerify: (ctx, p) => showCupertinoOrMaterialSheet(
+                          ctx, TrustSheet(peer: p, state: st))),
                 ],
                 if (_interopPeers.isNotEmpty) ...[
                   const _SectionLabel('Other apps'),
@@ -259,10 +257,9 @@ class _GateBanner extends StatelessWidget {
               size: 18, color: Theme.of(context).colorScheme.onErrorContainer),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(msg,
-                style: TextStyle(
-                    fontSize: L.small,
-                    color: Theme.of(context).colorScheme.onErrorContainer)),
+            child: L.txt(msg,
+                size: L.small,
+                color: Theme.of(context).colorScheme.onErrorContainer),
           ),
           TextButton(
             style: TextButton.styleFrom(
@@ -279,8 +276,8 @@ class _GateBanner extends StatelessWidget {
               }
             },
             child:
-                Text(msg.contains('Settings') ? 'Settings' : 'Retry',
-                    style: const TextStyle(fontSize: L.small)),
+                L.txt(msg.contains('Settings') ? 'Settings' : 'Retry',
+                    size: L.small),
           ),
         ],
       ),
@@ -319,16 +316,16 @@ class _PeerRow extends StatelessWidget {
                 size: 20,
                 color: trusted ? Colors.green.shade800 : L.muted(context)),
           ),
-          title: Text(p.name,
+          title: L.txt(p.name,
+              size: L.body,
+              weight: FontWeight.w600,
               maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                  fontSize: L.body, fontWeight: FontWeight.w600)),
-          subtitle: Text(
+              overflow: TextOverflow.ellipsis),
+          subtitle: L.muteTxt(
+            context,
             p.status.isEmpty ? 'Nearby' : p.status,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: L.small, color: L.muted(context)),
           ),
           trailing: trusted
               ? Icon(Icons.chevron_right,
@@ -341,8 +338,7 @@ class _PeerRow extends StatelessWidget {
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
                   onPressed: () => onVerify(context, p),
-                  child: const Text('Verify',
-                      style: TextStyle(fontSize: L.body)),
+                  child: L.txt('Verify', size: L.body),
                 ),
           onTap: trusted
               ? () => onOpen(p.id, p.name)
@@ -390,9 +386,8 @@ class _TrustSheetState extends State<TrustSheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Verify ${p.name}',
-                style: const TextStyle(
-                    fontSize: L.title, fontWeight: FontWeight.w600)),
+            L.txt('Verify ${p.name}',
+                size: L.title, weight: FontWeight.w600),
             const SizedBox(height: 4),
             LMute('Match this code with ${p.name}, then chat.',
                 align: TextAlign.center),
@@ -406,11 +401,12 @@ class _TrustSheetState extends State<TrustSheet> {
                     .surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(L.radius),
               ),
-              child: Text(_fp,
+              child: SelectableText(_fp,
                   style: TextStyle(
                       fontSize: L.title,
                       fontFamily: 'monospace',
                       letterSpacing: 1.2,
+                      decoration: TextDecoration.none,
                       color: Theme.of(context).colorScheme.onSurface)),
             ),
             const SizedBox(height: 14),
@@ -423,7 +419,7 @@ class _TrustSheetState extends State<TrustSheet> {
                       textStyle: const TextStyle(fontSize: L.body),
                     ),
                     onPressed: () => Navigator.pop(context),
-                    child: const Text('Later'),
+                    child: L.txt('Later', size: L.body),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -439,7 +435,7 @@ class _TrustSheetState extends State<TrustSheet> {
                       if (context.mounted) Navigator.pop(context);
                       await widget.state.refreshPeers();
                     },
-                    child: const Text('Match'),
+                    child: L.txt('Match', size: L.body, weight: FontWeight.w600),
                   ),
                 ),
               ],
@@ -459,19 +455,18 @@ class _SectionLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(L.pad, 16, L.pad, 4),
-      child: Text(text.toUpperCase(),
-          style: TextStyle(
-              fontSize: L.tiny,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.8,
-              color: L.muted(context))),
+      child: L.txt(text.toUpperCase(),
+          size: L.tiny,
+          weight: FontWeight.w600,
+          color: L.muted(context)),
     );
   }
 }
 
-/// Read-only row for a non-Lantern device found on the LAN (e.g. AirChat).
-/// Tapping runs a safe probe and shows the verdict. No chat until the
-/// wire format is known — AirChat traffic is unencrypted per its ToS.
+/// Row for a non-Lantern device found on the LAN (e.g. AirChat).
+/// Probe classifies framing; once classified, tapping opens a two-way
+/// chat. The chat is labeled NOT ENCRYPTED — AirChat traffic is plaintext
+/// per its own ToS, so it never mixes with E2EE Lantern chats.
 class _InteropRow extends StatefulWidget {
   final InteropScanner scanner;
   final InteropPeer peer;
@@ -513,31 +508,66 @@ class _InteropRowState extends State<_InteropRow> {
         child: Icon(Icons.devices_outlined,
             size: 20, color: L.muted(context)),
       ),
-      title: Text('${p.name} · ${p.serviceType}',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: L.body)),
-      subtitle: Text(
-        _verdict ?? '${p.host}:${p.port} · tap to probe',
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(fontSize: L.small, color: L.muted(context)),
-      ),
+      title: L.txt('${p.name} · ${p.serviceType}', size: L.body),
+      subtitle: L.muteTxt(
+          context, _verdict ?? _hint(p),
+          maxLines: 2, overflow: TextOverflow.ellipsis),
       trailing: _busy
           ? const SizedBox(
-              width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2))
           : TextButton(
               style: TextButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 6),
                 minimumSize: Size.zero,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
-              onPressed: _probe,
-              child:
-                  const Text('Probe', style: TextStyle(fontSize: L.body)),
+              onPressed: () => _tap(context),
+              child: L.txt(_action(p), size: L.body),
             ),
-      onTap: _busy ? null : _probe,
+      onTap: _busy ? null : () => _tap(context),
     );
+  }
+
+  String _hint(InteropPeer p) {
+    if (p.framing == 'lenprefix' ||
+        p.framing == 'ndjson' ||
+        p.framing == 'lines') {
+      return '${p.host}:${p.port} · tap to chat (not encrypted)';
+    }
+    return '${p.host}:${p.port} · tap to probe';
+  }
+
+  String _action(InteropPeer p) {
+    if (p.framing == 'lenprefix' ||
+        p.framing == 'ndjson' ||
+        p.framing == 'lines') {
+      return 'Chat';
+    }
+    return 'Probe';
+  }
+
+  Future<void> _tap(BuildContext context) async {
+    final p = widget.peer;
+    if (p.framing == 'lenprefix' ||
+        p.framing == 'ndjson' ||
+        p.framing == 'lines') {
+      _openChat(context);
+      return;
+    }
+    await _probe();
+    if (!context.mounted) return;
+    if (p.framing == 'lenprefix' ||
+        p.framing == 'ndjson' ||
+        p.framing == 'lines') {
+      _openChat(context);
+    }
+  }
+
+  void _openChat(BuildContext context) {
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => InteropChatPage(peer: widget.peer)));
   }
 }

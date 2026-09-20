@@ -22,9 +22,10 @@ class _HomeShellState extends State<HomeShell> {
   bool get _cupertino => L.cupertino(context);
 
   void _openChat(String peerId, String name) {
-    // Push on the root navigator: works from any tab on both platforms,
-    // and the chat page is never trapped inside a tab scaffold body.
-    Navigator.of(context, rootNavigator: true).push(
+    // Push on the tab's own navigator (NOT rootNavigator): each
+    // CupertinoTabView owns a navigator, and rootNavigator pushes from
+    // inside a tab break the tab scaffold on iOS 16 (white screen).
+    Navigator.of(context).push(
       _cupertino
           ? CupertinoPageRoute(
               builder: (_) => ChatPage(
@@ -49,9 +50,12 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  // ---- iOS: one CupertinoTabScaffold, each tab owns its CupertinoTabView ----
+  // ---- iOS: one CupertinoTabScaffold, each tab owns its CupertinoTabView.
+  // Every tab body is wrapped in Material(type: transparency) so Material
+  // widgets (ListTile, RefreshIndicator, Dismissible, sheets) always have
+  // a Material ancestor — without it iOS 16 renders text with yellow
+  // underlines and ink effects white-screen. ----
   Widget _ios(BuildContext context) {
-    final trust = widget.state.trustRequest;
     return Stack(
       children: [
         CupertinoTabScaffold(
@@ -84,20 +88,27 @@ class _HomeShellState extends State<HomeShell> {
             }
             return CupertinoTabView(
               builder: (context) => CupertinoPageScaffold(
-                navigationBar: CupertinoNavigationBar(middle: Text(title)),
-                child: SafeArea(child: tabBody),
+                backgroundColor: CupertinoColors.systemGroupedBackground,
+                navigationBar:
+                    CupertinoNavigationBar(middle: Text(title)),
+                // Material ancestor kills the iOS-16 yellow-underline text
+                // and gives RefreshIndicator/Dismissible a canvas.
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: SafeArea(child: tabBody),
+                ),
               ),
             );
           },
         ),
-        if (trust != null) _trustBanner(context, trust),
+        if (widget.state.trustRequest != null)
+          _trustBanner(context, widget.state.trustRequest!),
       ],
     );
   }
 
-  // ---- Android: Material 3 NavigationBar, no dead scaffolds ----
+  // ---- Android: Material 3 NavigationBar ----
   Widget _android(BuildContext context) {
-    final trust = widget.state.trustRequest;
     final title = switch (_tab) {
       0 => 'Chats',
       1 => 'Peers',
@@ -137,67 +148,61 @@ class _HomeShellState extends State<HomeShell> {
             ],
           ),
         ),
-        if (trust != null) _trustBanner(context, trust),
+        if (widget.state.trustRequest != null)
+          _trustBanner(context, widget.state.trustRequest!),
       ],
     );
   }
 
   Widget _trustBanner(BuildContext context, trust) {
-    return Positioned(
-      left: 12,
-      right: 12,
-      bottom: 92,
-      child: Material(
-        elevation: 6,
-        borderRadius: BorderRadius.circular(L.radius),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            children: [
-              const Icon(Icons.shield_outlined, size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text('${trust.name} found. Verify?',
-                    style: const TextStyle(fontSize: L.body),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
+    // Material ancestor is provided by the _android Scaffold; on iOS the
+    // banner sits above the CupertinoTabScaffold so wrap it explicitly.
+    final card = Material(
+      elevation: 6,
+      borderRadius: BorderRadius.circular(L.radius),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            const Icon(Icons.shield_outlined, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text('${trust.name} found. Verify?',
+                  style: const TextStyle(
+                      fontSize: L.body, decoration: TextDecoration.none),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis),
+            ),
+            TextButton(
+              style: TextButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
-              TextButton(
-                style: TextButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                onPressed: widget.state.dismissTrust,
-                child: const Text('Later',
-                    style: TextStyle(fontSize: L.body)),
+              onPressed: widget.state.dismissTrust,
+              child: L.txt('Later', size: L.body),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                textStyle: const TextStyle(
+                    fontSize: L.body, fontWeight: FontWeight.w600),
               ),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  textStyle: const TextStyle(
-                      fontSize: L.body, fontWeight: FontWeight.w600),
-                ),
-                onPressed: () {
-                  widget.state.dismissTrust();
-                  showModalBottomSheet(
-                    context: context,
-                    useRootNavigator: true,
-                    showDragHandle: true,
-                    builder: (_) =>
-                        TrustSheet(peer: trust, state: widget.state),
-                  );
-                },
-                child: const Text('Verify'),
-              ),
-            ],
-          ),
+              onPressed: () {
+                widget.state.dismissTrust();
+                showCupertinoOrMaterialSheet(
+                    context, TrustSheet(peer: trust, state: widget.state));
+              },
+              child: L.txt('Verify', size: L.body, weight: FontWeight.w600),
+            ),
+          ],
         ),
       ),
     );
+    return Positioned(left: 12, right: 12, bottom: 92, child: card);
   }
 }

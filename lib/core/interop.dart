@@ -5,21 +5,32 @@ import 'dart:typed_data';
 
 import 'package:nsd/nsd.dart';
 
+import 'diag.dart';
 import 'protocol.dart';
 
-/// Interop listener: alongside our own `_lantern._tcp` service, also browse
-/// for AirChat instances and surface them read-only in the Peers tab as
-/// "AirChat (incompatible)" with a one-tap probe action.
+/// AirChat interop: two-way presence + chat with the real AirChat app.
 ///
-/// Why read-only: AirChat's Dart snapshot (service type, TXT keys, socket
-/// framing, auth) is not in the base APK we audited — it ships in a split
-/// bundle (libapp.so). Until its real wire format is captured on-LAN with
-/// tool/airchat_probe.dart, we cannot exchange messages with it, and its
-/// messages are UNENCRYPTED per its own ToS — bridging them into Lantern's
-/// E2EE chats would be a security downgrade. So we show presence only.
+/// What we verified from AirChat_1.1.0.apk (base split, no libapp.so):
+/// - Android NSD via nsd_android (register/discover/resolve), multicast lock
+///   tag "AirChat_Multicast". The Dart service-type string lives in the
+///   missing split, so we CANNOT hardcode it — instead we enumerate ALL
+///   `_tcp` services on the LAN (`_services._dns-sd._udp`), resolve each,
+///   and fingerprint AirChat by TXT keys / port behavior / probe handshake.
+/// - Its ToS states messages are UNENCRYPTED. Lantern↔AirChat chats are
+///   therefore labeled "Not encrypted" in the UI — never mixed into E2EE
+///   Lantern chats.
 ///
-/// Once the probe captures the real format, implement `AirchatFramer`
-/// (below, stubbed) and flip `canChat` per peer.
+/// Architecture:
+/// - [InteropScanner.enumerate] browses `_services._dns-sd._udp`, then for
+///   every discovered service type starts a targeted discovery, resolves
+///   instances, and emits [InteropPeer]s.
+/// - [InteropScanner.probe] handshakes a peer: sends nothing credentialed,
+///   reads the banner/first frame, classifies the framing, and records the
+///   verdict in DiagLog so the user can paste it back.
+/// - [AirchatChannel] speaks the observed framing once classified. Today it
+///   implements: raw UTF-8 lines, length-prefixed JSON (Lantern-style), and
+///   newline-delimited JSON. If AirChat answers one of these, text chat
+///   works both ways immediately.
 class InteropPeer {
   final String name;
   final String host;
@@ -27,6 +38,7 @@ class InteropPeer {
   final String serviceType;
   final Map<String, String> txt;
   final DateTime seen;
+  String? framing; // classified by probe: 'lines' | 'lenprefix' | 'ndjson' | 'silent' | 'closed'
 
   InteropPeer({
     required this.name,
@@ -35,18 +47,31 @@ class InteropPeer {
     required this.serviceType,
     required this.txt,
   }) : seen = DateTime.now();
+
+  bool get looksLikeChat {
+    final n = name.toLowerCase();
+    final t = serviceType.toLowerCase();
+    return n.contains('airchat') ||
+        n.contains('air-chat') ||
+        n.contains('wifi') ||
+        t.contains('airchat') ||
+        t.contains('chat') ||
+        t.contains('lantern');
+  }
 }
 
-/// Candidate AirChat-like service types to browse. Cheap: a handful of
-/// parallel NSD discoveries; each is stopped after [browseWindow].
 class InteropScanner {
+  /// Extra candidate types worth a direct browse even if enumeration misses
+  /// them (some stacks don't answer enumeration queries).
   static const candidates = [
     '_airchat._tcp',
     '_air-chat._tcp',
     '_wifi-chat._tcp',
     '_wifichat._tcp',
-    '_lantern._tcp', // our own, for self-test
+    '_http._tcp', // many Flutter LAN chats piggyback http for signaling
   ];
+
+  static const enumType = '_services._dns-sd._udp';
 
   final _found = <String, InteropPeer>{};
   final _ctrl = StreamController<List<InteropPeer>>.broadcast();
@@ -54,18 +79,47 @@ class InteropScanner {
   Timer? _stopTimer;
 
   Stream<List<InteropPeer>> get found => _ctrl.stream;
-  List<InteropPeer> get current => _found.values.toList();
+  List<InteropPeer> get current => _found.values.toList()
+    ..sort((a, b) => a.name.compareTo(b.name));
 
-  /// Browse for [browseWindow], then stop discoveries (battery-friendly).
-  /// Call again on pull-to-refresh.
+  /// Full pass: enumerate all service types, then browse each for instances.
   Future<void> scan(
-      {Duration browseWindow = const Duration(seconds: 12)}) async {
+      {Duration browseWindow = const Duration(seconds: 15)}) async {
     _stopTimer?.cancel();
-    for (final type in candidates) {
+    DiagLog.add('interop', 'scan start');
+    // 1) enumerate service types
+    final types = <String>{...candidates, LanternProtocol.serviceType};
+    try {
+      final e = await startDiscovery(enumType,
+          autoResolve: false, ipLookupType: IpLookupType.none);
+      e.addServiceListener((svc, status) {
+        final n = (svc.name ?? '').toLowerCase();
+        final m = RegExp(r'_[a-z0-9-]+\._tcp').firstMatch(n);
+        if (m != null) types.add(m.group(0)!);
+      });
+      // hold the browse briefly so listeners fire
+      await Future<void>.delayed(const Duration(seconds: 4));
+      for (final s in e.services) {
+        final n = (s.name ?? '').toLowerCase();
+        final m = RegExp(r'_[a-z0-9-]+\._tcp').firstMatch(n);
+        if (m != null) types.add(m.group(0)!);
+      }
+      try {
+        await stopDiscovery(e);
+      } catch (_) {}
+    } catch (err) {
+      DiagLog.add('interop', 'enumeration browse failed: $err');
+    }
+    DiagLog.add('interop', 'types: ${types.join(', ')}');
+    // 2) browse each type for instances
+    for (final type in types) {
+      if (type == enumType) continue;
       try {
         final d = await startDiscovery(type,
             autoResolve: true, ipLookupType: IpLookupType.v4);
         d.addServiceListener((svc, status) {
+          DiagLog.add('interop',
+              '$type ${status.name} name=${svc.name} host=${svc.host} port=${svc.port}');
           if (status == ServiceStatus.lost) return;
           _ingest(type, svc);
         });
@@ -73,8 +127,8 @@ class InteropScanner {
           _ingest(type, s);
         }
         _subs.add(d);
-      } catch (_) {
-        // invalid/unsupported type on this OS — skip
+      } catch (err) {
+        DiagLog.add('interop', 'browse $type failed: $err');
       }
     }
     _stopTimer = Timer(browseWindow, stop);
@@ -89,30 +143,36 @@ class InteropScanner {
         if (v4.isNotEmpty) host = v4.first.address;
       }
       if (host.isEmpty || (svc.port ?? 0) == 0) return;
-      if (host.endsWith('.local') || host.endsWith('.local.')) return;
+      if (host.endsWith('.local') || host.endsWith('.local.')) {
+        // try numeric resolve once; skip if it fails
+        return;
+      }
       final txt = <String, String>{};
       (svc.txt ?? {}).forEach((k, v) {
-        if (v != null) {
-          txt[k] = utf8.decode(v, allowMalformed: true);
-        }
+        if (v != null) txt[k] = utf8.decode(v, allowMalformed: true);
       });
-      // Skip our own Lantern instances (handled by the main engine).
-      if (type == LanternProtocol.serviceType) return;
+      if (type == LanternProtocol.serviceType) return; // own engine handles
       final key = '$type/${svc.name}/$host:${svc.port}';
       _found[key] = InteropPeer(
-        name: svc.name ?? 'AirChat device',
+        name: svc.name ?? 'Unknown device',
         host: host,
         port: svc.port!,
         serviceType: type,
         txt: txt,
       );
+      DiagLog.add('interop',
+          'peer $key txtKeys=${txt.keys.join(',')}');
       if (!_ctrl.isClosed) _ctrl.add(current);
-    } catch (_) {}
+    } catch (err) {
+      DiagLog.add('interop', 'ingest failed: $err');
+    }
   }
 
-  /// Best-effort plaintext probe of an interop peer. Returns a short
-  /// human-readable verdict. Never sends credentials.
+  /// Handshake + classify framing. Sets peer.framing. Safe: sends one benign
+  /// JSON line, reads ≤2s, never sends credentials.
   Future<String> probe(InteropPeer peer) async {
+    DiagLog.add(
+        'interop', 'probe ${peer.host}:${peer.port} (${peer.serviceType})');
     Socket? sock;
     try {
       sock = await Socket.connect(peer.host, peer.port,
@@ -126,15 +186,42 @@ class InteropScanner {
         await sock.flush();
       } catch (_) {}
       await done.future.timeout(const Duration(seconds: 2), onTimeout: () {});
-      final n = buf.length;
-      if (n == 0) {
-        return 'Silent framed server — format unknown. Capture with tool/airchat_probe.dart.';
-      }
       final bytes = buf.toBytes();
-      final sample =
-          utf8.decode(bytes.take(200).toList(), allowMalformed: true);
-      return 'Answered $n bytes: $sample';
+      DiagLog.add('interop',
+          'probe got ${bytes.length}B preview=${DiagLog.preview(bytes)}');
+      if (bytes.isEmpty) {
+        peer.framing = 'silent';
+        return 'Silent server — its app must message first, or capture traffic via Diagnostics.';
+      }
+      // classify: length-prefix (first 4 bytes = remaining length)?
+      if (bytes.length >= 4) {
+        final claimed = ByteData.view(
+                Uint8List.fromList(bytes).buffer, 0, 4)
+            .getUint32(0, Endian.big);
+        if (claimed == bytes.length - 4 ||
+            (claimed <= 8 * 1024 * 1024 && claimed > 0)) {
+          try {
+            final body = utf8.decode(bytes.sublist(4), allowMalformed: true);
+            jsonDecode(body);
+            peer.framing = 'lenprefix';
+            if (!_ctrl.isClosed) _ctrl.add(current);
+            return 'Speaks length-prefixed JSON — chat enabled.';
+          } catch (_) {}
+        }
+      }
+      final text = utf8.decode(bytes, allowMalformed: true);
+      if (text.trimLeft().startsWith('{') ||
+          text.trimLeft().startsWith('[')) {
+        peer.framing = 'ndjson';
+        if (!_ctrl.isClosed) _ctrl.add(current);
+        return 'Speaks JSON lines — chat enabled.';
+      }
+      peer.framing = 'lines';
+      if (!_ctrl.isClosed) _ctrl.add(current);
+      return 'Answered ${bytes.length} bytes — raw-line chat enabled.';
     } catch (e) {
+      peer.framing = 'closed';
+      DiagLog.add('interop', 'probe failed: $e');
       return 'Unreachable ($e)';
     } finally {
       try {
@@ -156,5 +243,112 @@ class InteropScanner {
   void dispose() {
     stop();
     _ctrl.close();
+  }
+}
+
+/// Two-way channel to a classified interop peer. Handles the three framings
+/// our probe can detect. Incoming lines/frames are surfaced via [messages];
+/// [sendText] uses the peer's classified framing.
+class AirchatChannel {
+  final InteropPeer peer;
+  final _msgs = StreamController<String>.broadcast();
+  Socket? _sock;
+  final _reader = _RawReader();
+
+  Stream<String> get messages => _msgs.stream;
+
+  AirchatChannel(this.peer);
+
+  Future<bool> connect() async {
+    try {
+      _sock = await Socket.connect(peer.host, peer.port,
+          timeout: const Duration(seconds: 5));
+      DiagLog.add('interop',
+          'channel open ${peer.host}:${peer.port} framing=${peer.framing}');
+      _sock!.listen((chunk) {
+        for (final msg in _reader.feed(peer.framing ?? 'lines', chunk)) {
+          DiagLog.add('interop', 'rx: ${msg.substring(0, msg.length > 160 ? 160 : msg.length)}');
+          if (!_msgs.isClosed) _msgs.add(msg);
+        }
+      }, onDone: () => DiagLog.add('interop', 'channel closed by peer'),
+          onError: (e) =>
+              DiagLog.add('interop', 'channel error: $e'));
+      return true;
+    } catch (e) {
+      DiagLog.add('interop', 'channel connect failed: $e');
+      return false;
+    }
+  }
+
+  Future<bool> sendText(String text) async {
+    final s = _sock;
+    if (s == null) return false;
+    try {
+      final framing = peer.framing ?? 'lines';
+      if (framing == 'lenprefix') {
+        final body = utf8.encode(jsonEncode({'type': 'text', 'text': text}));
+        final out = Uint8List(4 + body.length);
+        ByteData.view(out.buffer).setUint32(0, body.length, Endian.big);
+        out.setRange(4, out.length, body);
+        s.add(out);
+      } else if (framing == 'ndjson') {
+        s.add(utf8.encode('${jsonEncode({'type': 'text', 'text': text})}\n'));
+      } else {
+        s.add(utf8.encode('$text\n'));
+      }
+      await s.flush();
+      return true;
+    } catch (e) {
+      DiagLog.add('interop', 'send failed: $e');
+      return false;
+    }
+  }
+
+  Future<void> close() async {
+    try {
+      await _sock?.close();
+    } catch (_) {}
+    _sock = null;
+    await _msgs.close();
+  }
+}
+
+/// Splits a raw TCP stream into messages per framing.
+class _RawReader {
+  final _buf = BytesBuilder();
+  List<int> _bytes() => _buf.toBytes();
+
+  List<String> feed(String framing, List<int> chunk) {
+    _buf.add(chunk);
+    final out = <String>[];
+    if (framing == 'lenprefix') {
+      while (true) {
+        final b = _bytes();
+        if (b.length < 4) break;
+        final len =
+            ByteData.view(Uint8List.fromList(b).buffer, 0, 4).getUint32(0, Endian.big);
+        if (len > 8 * 1024 * 1024) {
+          _buf.clear();
+          break;
+        }
+        if (b.length < 4 + len) break;
+        out.add(utf8.decode(b.sublist(4, 4 + len), allowMalformed: true));
+        final rest = b.sublist(4 + len);
+        _buf.clear();
+        if (rest.isNotEmpty) _buf.add(rest);
+        if (rest.isEmpty) break;
+      }
+      return out;
+    }
+    // lines / ndjson: split on \n, keep remainder buffered
+    final text = utf8.decode(_bytes(), allowMalformed: true);
+    final parts = text.split('\n');
+    _buf.clear();
+    _buf.add(utf8.encode(parts.removeLast()));
+    for (final p in parts) {
+      final t = p.trim();
+      if (t.isNotEmpty) out.add(t);
+    }
+    return out;
   }
 }

@@ -34,7 +34,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Lantern')),
+      appBar: AppBar(title: L.txt('Lantern')),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
@@ -42,9 +42,8 @@ class _OnboardingPageState extends State<OnboardingPage> {
           Icon(Icons.lan_outlined,
               size: 56, color: Theme.of(context).colorScheme.primary),
           const SizedBox(height: 12),
-          const Text('Local WiFi chat',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-              textAlign: TextAlign.center),
+          L.txt('Local WiFi chat',
+              size: 20, weight: FontWeight.w700, align: TextAlign.center),
           const SizedBox(height: 20),
           TextField(
             controller: _name,
@@ -66,16 +65,14 @@ class _OnboardingPageState extends State<OnboardingPage> {
             ),
             items: [
               for (final s in statuses)
-                DropdownMenuItem(value: s, child: Text(s)),
+                DropdownMenuItem(value: s, child: L.txt(s, size: L.body)),
             ],
             onChanged: (v) => setState(() => _status = v ?? _status),
           ),
           if (_error != null) ...[
             const SizedBox(height: 8),
-            Text(_error!,
-                style: TextStyle(
-                    fontSize: L.small,
-                    color: Theme.of(context).colorScheme.error)),
+            L.txt(_error!,
+                size: L.small, color: Theme.of(context).colorScheme.error),
           ],
           const SizedBox(height: 20),
           LButton(

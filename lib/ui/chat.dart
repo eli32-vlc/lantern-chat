@@ -108,17 +108,15 @@ class _ChatPageState extends State<ChatPage> {
           const SnackBar(content: Text('Peer is offline right now.')));
       return;
     }
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (_) => SafeArea(
+    showCupertinoOrMaterialSheet(
+      context,
+      SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
               leading: const Icon(Icons.photo, size: 22),
-              title: const Text('Photo or video',
-                  style: TextStyle(fontSize: L.body)),
+              title: L.txt('Photo or video', size: L.body),
               onTap: () async {
                 Navigator.pop(context);
                 if (!await LanPermissions.ensurePhotos()) {
@@ -136,8 +134,7 @@ class _ChatPageState extends State<ChatPage> {
             ),
             ListTile(
               leading: const Icon(Icons.camera_alt, size: 22),
-              title:
-                  const Text('Camera', style: TextStyle(fontSize: L.body)),
+              title: L.txt('Camera', size: L.body),
               onTap: () async {
                 Navigator.pop(context);
                 if (!await LanPermissions.ensureCamera()) {
@@ -155,7 +152,7 @@ class _ChatPageState extends State<ChatPage> {
             ),
             ListTile(
               leading: const Icon(Icons.attach_file, size: 22),
-              title: const Text('File', style: TextStyle(fontSize: L.body)),
+              title: L.txt('File', size: L.body),
               onTap: () async {
                 Navigator.pop(context);
                 final r = await FilePicker.pickFiles();
@@ -210,9 +207,8 @@ class _ChatPageState extends State<ChatPage> {
     // Fixes the iOS blank-screen: no nested page scaffold.
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.peerName,
-            style: const TextStyle(
-                fontSize: L.title, fontWeight: FontWeight.w600)),
+        title: L.txt(widget.peerName,
+            size: L.title, weight: FontWeight.w600),
         actions: const [
           Padding(
             padding: EdgeInsets.only(right: 12),
@@ -227,13 +223,13 @@ class _ChatPageState extends State<ChatPage> {
             padding:
                 const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             color: Colors.green.shade50,
-            child: const Row(
+            child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.lock, size: 14, color: Colors.green),
-                SizedBox(width: 6),
-                Text('End-to-end encrypted',
-                    style: TextStyle(fontSize: 12, color: Colors.green)),
+                const Icon(Icons.lock, size: 14, color: Colors.green),
+                const SizedBox(width: 6),
+                L.txt('End-to-end encrypted',
+                    size: L.small, color: Colors.green),
               ],
             ),
           ),
@@ -331,9 +327,8 @@ class _ChatPageState extends State<ChatPage> {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(_time(m.ts),
-                      style:
-                          const TextStyle(fontSize: 10, color: Colors.grey)),
+                  L.txt(_time(m.ts),
+                      size: 10, color: L.muted(context)),
                   if (me) ...[
                     const SizedBox(width: 4),
                     Icon(
@@ -352,9 +347,13 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _content(ChatMessage m) {
+    final bodyStyle = TextStyle(
+        fontSize: L.body,
+        color: Theme.of(context).colorScheme.onSurface,
+        decoration: TextDecoration.none);
     switch (m.kind) {
       case LanternMsgKind.text:
-        return SelectableText(m.text ?? '');
+        return SelectableText(m.text ?? '', style: bodyStyle);
       case LanternMsgKind.image:
         final p = m.filePath;
         if (p != null && File(p).existsSync()) {
@@ -365,11 +364,12 @@ class _ChatPageState extends State<ChatPage> {
                 borderRadius: BorderRadius.circular(8),
                 child: Image.file(File(p), width: 220),
               ),
-              if (m.text != null) Text(m.text!),
+              if (m.text != null) L.txt(m.text!, size: L.body),
             ],
           );
         }
-        return Text('📷 Photo (${m.fileName ?? 'unavailable'})');
+        return L.txt('📷 Photo (${m.fileName ?? 'unavailable'})',
+            size: L.body);
       case LanternMsgKind.voice:
         return _VoiceBubble(m);
       case LanternMsgKind.video:
@@ -377,10 +377,9 @@ class _ChatPageState extends State<ChatPage> {
       case LanternMsgKind.file:
         return _FileTile(m);
       case LanternMsgKind.callEvent:
-        return Text('📞 ${m.text ?? 'Call'}');
+        return L.txt('📞 ${m.text ?? 'Call'}', size: L.body);
       case LanternMsgKind.system:
-        return Text(m.text ?? '',
-            style: const TextStyle(fontStyle: FontStyle.italic));
+        return L.txt(m.text ?? '', size: L.small);
     }
   }
 
@@ -390,41 +389,58 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void _msgMenu(ChatMessage m) {
-    showModalBottomSheet(
-      context: context,
-      builder: (sheetCtx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (m.text != null)
-              ListTile(
-                leading: const Icon(Icons.copy),
-                title: const Text('Copy'),
-                onTap: () => Navigator.pop(sheetCtx),
-              ),
-            if (m.kind == LanternMsgKind.file ||
-                m.kind == LanternMsgKind.image ||
-                m.kind == LanternMsgKind.video ||
-                m.kind == LanternMsgKind.voice)
-              ListTile(
-                leading: const Icon(Icons.open_in_new),
-                title: const Text('Open file'),
-                subtitle: Text(m.filePath ?? m.fileName ?? ''),
-                onTap: () => Navigator.pop(sheetCtx),
-              ),
+    showCupertinoOrMaterialSheet(
+      context,
+      _MsgMenuBody(message: m, state: widget.state, onChanged: _reload),
+    );
+  }
+}
+
+/// Long-press message menu body (platform sheet wrapper is in theme.dart).
+class _MsgMenuBody extends StatelessWidget {
+  final ChatMessage message;
+  final AppState state;
+  final VoidCallback onChanged;
+  const _MsgMenuBody(
+      {required this.message,
+      required this.state,
+      required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final m = message;
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (m.text != null)
             ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title:
-                  const Text('Delete', style: TextStyle(color: Colors.red)),
-              onTap: () async {
-                Navigator.pop(sheetCtx);
-                await widget.state.store.db.delete('messages',
-                    where: 'id = ?', whereArgs: [m.id]);
-                _reload();
-              },
+              leading: const Icon(Icons.copy, size: 22),
+              title: L.txt('Copy', size: L.body),
+              onTap: () => Navigator.pop(context),
             ),
-          ],
-        ),
+          if (m.kind == LanternMsgKind.file ||
+              m.kind == LanternMsgKind.image ||
+              m.kind == LanternMsgKind.video ||
+              m.kind == LanternMsgKind.voice)
+            ListTile(
+              leading: const Icon(Icons.open_in_new, size: 22),
+              title: L.txt('Open file', size: L.body),
+              subtitle: L.muteTxt(context, m.filePath ?? m.fileName ?? '',
+                  align: TextAlign.start),
+              onTap: () => Navigator.pop(context),
+            ),
+          ListTile(
+            leading: const Icon(Icons.delete, color: Colors.red, size: 22),
+            title: L.txt('Delete', size: L.body, color: Colors.red),
+            onTap: () async {
+              Navigator.pop(context);
+              await state.store.db.delete('messages',
+                  where: 'id = ?', whereArgs: [m.id]);
+              onChanged();
+            },
+          ),
+        ],
       ),
     );
   }
@@ -519,8 +535,8 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
               children: [
                 LinearProgressIndicator(value: progress),
                 const SizedBox(height: 4),
-                Text(exists ? '🎙️ $label' : '🎙️ Voice unavailable',
-                    style: const TextStyle(fontSize: 12)),
+                L.txt(exists ? '🎙️ $label' : '🎙️ Voice unavailable',
+                    size: L.small),
               ],
             ),
           ),
@@ -564,7 +580,8 @@ class _VideoBubbleState extends State<_VideoBubble> {
   @override
   Widget build(BuildContext context) {
     if (_ctrl == null) {
-      return Text('🎬 Video: ${widget.m.fileName ?? ''} (unavailable)');
+      return L.txt('🎬 Video: ${widget.m.fileName ?? ''} (unavailable)',
+          size: L.body);
     }
     if (!_ready) {
       return const SizedBox(
@@ -630,12 +647,11 @@ class _FileTile extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(m.fileName ?? 'File',
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
-              Text(
+              L.txt(m.fileName ?? 'File',
+                  size: L.body, weight: FontWeight.w600),
+              L.muteTxt(context,
                 '${m.fileBytes != null ? _kb(m.fileBytes!) : ''}${exists ? '' : ' • not on this device'}',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-              ),
+                align: TextAlign.start),
             ],
           ),
         ),
