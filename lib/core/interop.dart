@@ -77,15 +77,25 @@ class InteropScanner {
   final _ctrl = StreamController<List<InteropPeer>>.broadcast();
   final _subs = <Discovery>[];
   Timer? _stopTimer;
+  DateTime? _lastScan;
 
   Stream<List<InteropPeer>> get found => _ctrl.stream;
   List<InteropPeer> get current => _found.values.toList()
     ..sort((a, b) => a.name.compareTo(b.name));
 
   /// Full pass: enumerate all service types, then browse each for instances.
+  /// Debounced: ignores calls within 20s of the previous scan start.
   Future<void> scan(
       {Duration browseWindow = const Duration(seconds: 15)}) async {
+    final now = DateTime.now();
+    if (_lastScan != null &&
+        now.difference(_lastScan!) < const Duration(seconds: 20)) {
+      DiagLog.add('interop', 'scan skipped (debounce)');
+      return;
+    }
+    _lastScan = now;
     _stopTimer?.cancel();
+    await stop(); // stop any previous discoveries before starting new ones
     DiagLog.add('interop', 'scan start');
     // 1) enumerate service types
     final types = <String>{...candidates, LanternProtocol.serviceType};
@@ -168,8 +178,9 @@ class InteropScanner {
     }
   }
 
-  /// Handshake + classify framing. Sets peer.framing. Safe: sends one benign
-  /// JSON line, reads ≤2s, never sends credentials.
+  /// Handshake + classify framing. Sets peer.framing. Safe: sends a Lantern
+  /// hello frame (4-byte length-prefixed JSON) plus a plain-text line,
+  /// reads ≤3s, never sends credentials.
   Future<String> probe(InteropPeer peer) async {
     DiagLog.add(
         'interop', 'probe ${peer.host}:${peer.port} (${peer.serviceType})');
@@ -181,17 +192,25 @@ class InteropScanner {
       final done = Completer<void>();
       sock.listen(buf.add, onDone: () => done.complete(),
           onError: (_) => done.complete());
+      // Send both formats: AirChat likely expects length-prefixed JSON
+      // (it runs a Dart server), but try plain JSON line too.
       try {
-        sock.add(utf8.encode('{"t":"probe","app":"lantern"}\n'));
+        final hello = utf8.encode(jsonEncode({'t': 'probe', 'app': 'lantern'}));
+        final lenPrefixed = Uint8List(4 + hello.length);
+        ByteData.view(lenPrefixed.buffer).setUint32(0, hello.length, Endian.big);
+        lenPrefixed.setRange(4, lenPrefixed.length, hello);
+        sock.add(lenPrefixed);
+        sock.add(utf8.encode('\n'));
         await sock.flush();
       } catch (_) {}
-      await done.future.timeout(const Duration(seconds: 2), onTimeout: () {});
+      await done.future.timeout(const Duration(seconds: 3), onTimeout: () {});
       final bytes = buf.toBytes();
       DiagLog.add('interop',
           'probe got ${bytes.length}B preview=${DiagLog.preview(bytes)}');
       if (bytes.isEmpty) {
         peer.framing = 'silent';
-        return 'Silent server — its app must message first, or capture traffic via Diagnostics.';
+        if (!_ctrl.isClosed) _ctrl.add(current);
+        return 'Silent — chat from Lantern side only. Its app must message first.';
       }
       // classify: length-prefix (first 4 bytes = remaining length)?
       if (bytes.length >= 4) {

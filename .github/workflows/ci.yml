@@ -73,3 +73,32 @@ jobs:
         with:
           name: lantern-ipa-unsigned
           path: unsigned-ipa/Lantern-unsigned.ipa
+
+  build-macos:
+    needs: analyze-test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - run: flutter config --enable-macos-desktop
+      - run: flutter build macos --release
+      - name: Zip macOS app
+        run: |
+          set -x
+          APP_PATH="build/macos/Build/Products/Release/Lantern Chat.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Looking for .app..."
+            find build/macos -name '*.app' -type d
+            APP_PATH=$(find build/macos -name '*.app' -type d | head -1)
+          fi
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then echo "no .app found"; exit 1; fi
+          echo "App: $APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" lantern-macos.zip
+          ls -la lantern-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lantern-macos
+          path: lantern-macos.zip

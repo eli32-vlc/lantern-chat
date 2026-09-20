@@ -79,6 +79,9 @@ class LanEngine {
   /// sessionKey cache per peer id
   final _sessions = <String, List<int>>{};
   final _sockets = <String, Socket>{};
+  /// Tracks which sockets we already replied 'hello' on — prevents the
+  /// hello echo storm (A→B hello, B replies hello, A replies hello…).
+  final _helloReplied = <Socket, DateTime>{};
 
   Stream<List<LanPeer>> get peers => _peerCtrl.stream;
   Stream<LanEvent> get events => _eventCtrl.stream;
@@ -104,36 +107,66 @@ class LanEngine {
         LanternProtocol.txtVer: _txtBytes('${LanternProtocol.protoVersion}'),
       };
 
+  /// Guarded start: NEVER throws. On failure records the cause in DiagLog,
+  /// marks [startError], and still notifies so the Peers tab shows the
+  /// real reason instead of an infinite spinner (the old white-screen).
+  String? startError;
+  bool starting = false;
+
   Future<void> start() async {
-    DiagLog.add('engine', 'start');
-    _server = await ServerSocket.bind(InternetAddress.anyIPv4, 0,
-        backlog: LanternProtocol.tcpBacklog);
-    DiagLog.add('engine', 'listening on port $port');
-    _server!.listen(_onInbound);
+    if (starting) return;
+    starting = true;
+    startError = null;
+    try {
+      DiagLog.add('engine', 'start');
+      _server = await ServerSocket.bind(InternetAddress.anyIPv4, 0,
+          backlog: LanternProtocol.tcpBacklog);
+      DiagLog.add('engine', 'listening on port $port');
+      _server!.listen(_onInbound);
 
-    final svc = Service(
-      name: '${LanternProtocol.serviceNamePrefix}${me.id.substring(0, 8)}',
-      type: LanternProtocol.serviceType,
-      port: port,
-      txt: await _txt(port),
-    );
-    _reg = await register(svc);
-    DiagLog.add('mdns', 'registered ${svc.name} type=${svc.type} port=$port');
+      final svc = Service(
+        name: '${LanternProtocol.serviceNamePrefix}${me.id.substring(0, 8)}',
+        type: LanternProtocol.serviceType,
+        port: port,
+        txt: await _txt(port),
+      );
+      try {
+        _reg = await register(svc);
+        DiagLog.add(
+            'mdns', 'registered ${svc.name} type=${svc.type} port=$port');
+      } catch (e) {
+        // Registration can fail (name clash, NSD off) while the TCP server
+        // is fine — discovery of others still works.
+        DiagLog.add('mdns', 'register failed: $e');
+      }
 
-    _discovery = await startDiscovery(LanternProtocol.serviceType,
-        autoResolve: true, ipLookupType: IpLookupType.v4);
-    DiagLog.add('mdns', 'browsing ${LanternProtocol.serviceType}');
-    _discovery!.addServiceListener(_onServiceEvent);
-    // seed with already-found services
-    for (final s in _discovery!.services) {
-      _onService(s);
-    }
+      try {
+        _discovery = await startDiscovery(LanternProtocol.serviceType,
+            autoResolve: true, ipLookupType: IpLookupType.v4);
+        DiagLog.add('mdns', 'browsing ${LanternProtocol.serviceType}');
+        _discovery!.addServiceListener(_onServiceEvent);
+        // seed with already-found services
+        for (final s in _discovery!.services) {
+          _onService(s);
+        }
+      } catch (e) {
+        DiagLog.add('mdns', 'browse failed: $e');
+        startError = 'Discovery failed: $e';
+      }
 
-    _prune = Timer.periodic(const Duration(seconds: 15), (_) {
-      final cutoff = DateTime.now().subtract(const Duration(seconds: 60));
-      _peers.removeWhere((_, p) => p.lastSeen.isBefore(cutoff));
+      _prune ??= Timer.periodic(const Duration(seconds: 15), (_) {
+        final cutoff =
+            DateTime.now().subtract(const Duration(seconds: 60));
+        _peers.removeWhere((_, p) => p.lastSeen.isBefore(cutoff));
+        if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
+      });
+    } catch (e) {
+      startError = '$e';
+      DiagLog.add('engine', 'start FAILED: $e');
+    } finally {
+      starting = false;
       if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
-    });
+    }
   }
 
   Future<void> updateProfile(String name, String st) async {
@@ -346,15 +379,31 @@ class LanEngine {
       final id = json['id'] as String? ?? '';
       final pk = json['pk'] as String? ?? '';
       if (id.isEmpty || pk.isEmpty || id == me.id) return;
-      try {
-        sock.add(LanternProtocol.encodeFrame({
-          't': 'hello',
-          'id': me.id,
-          'nm': displayName,
-          'pk': await me.publicKeyB64,
-          'v': LanternProtocol.protoVersion,
-        }));
-      } catch (_) {}
+      // Track inbound socket by peer id so sendTo can reuse it.
+      // This prevents duplicate dials and the hello echo loop.
+      if (dialPeerId == null && !_sockets.containsKey(id)) {
+        _sockets[id] = sock;
+        // Clean up socket tracking when the peer disconnects.
+        sock.done.then((_) {
+          if (_sockets[id] == sock) _sockets.remove(id);
+        }).catchError((_) {});
+      }
+      // Reply hello ONCE per socket: the other side does the same,
+      // breaking the A→B→A→B… echo storm.
+      final lastReplied = _helloReplied[sock];
+      if (lastReplied == null ||
+          DateTime.now().difference(lastReplied) > const Duration(seconds: 10)) {
+        _helloReplied[sock] = DateTime.now();
+        try {
+          sock.add(LanternProtocol.encodeFrame({
+            't': 'hello',
+            'id': me.id,
+            'nm': displayName,
+            'pk': await me.publicKeyB64,
+            'v': LanternProtocol.protoVersion,
+          }));
+        } catch (_) {}
+      }
       final known = await store.getPeer(id);
       if (known != null && known.trusted && known.pubB64 == pk) {
         _sessions[id] = await me.sharedKey(base64Decode(pk));
@@ -438,6 +487,7 @@ class LanEngine {
       } catch (_) {}
     }
     _sockets.clear();
+    _helloReplied.clear();
   }
 
   void dispose() {

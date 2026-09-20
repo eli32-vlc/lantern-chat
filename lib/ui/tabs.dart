@@ -177,6 +177,12 @@ class _PeersTabState extends State<PeersTab> {
     }
   }
 
+  Future<void> _retryEngine() async {
+    // Null out the failed engine so startEngine rebuilds it, then retry.
+    await widget.state.restartEngine();
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -193,6 +199,9 @@ class _PeersTabState extends State<PeersTab> {
                   height: 22,
                   child: CircularProgressIndicator(strokeWidth: 2.5)));
         }
+        // Engine failed to bind/browse? Show the reason + log shortcut
+        // instead of an empty list that looks like a white screen.
+        final startErr = st.engine?.startError;
         final peers = st.peers;
         return RefreshIndicator(
           onRefresh: () async {
@@ -204,7 +213,12 @@ class _PeersTabState extends State<PeersTab> {
             children: [
               if (_gateMsg != null)
                 _GateBanner(msg: _gateMsg!, onRetry: _check),
-              if (peers.isEmpty && _interopPeers.isEmpty)
+              if (startErr != null)
+                _GateBanner(
+                    msg: 'Network error: $startErr', onRetry: _retryEngine),
+              if (peers.isEmpty &&
+                  _interopPeers.isEmpty &&
+                  startErr == null)
                 const Padding(
                   padding: EdgeInsets.only(top: 48),
                   child: LEmpty(

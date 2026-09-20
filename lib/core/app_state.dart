@@ -86,7 +86,13 @@ class AppState extends ChangeNotifier {
       displayName: displayName,
       status: status,
     );
-    await engine!.start();
+    // start() never throws now, but guard anyway: the Peers tab must never
+    // hang on a spinner because of an engine exception.
+    try {
+      await engine!.start();
+    } catch (e) {
+      engine!.startError = '$e';
+    }
     engineUp = true;
     _peerSub = engine!.peers.listen((p) {
       peers = p;
@@ -184,6 +190,19 @@ class AppState extends ChangeNotifier {
   Future<void> refreshPeers() async {
     peers = engine?.currentPeers ?? peers;
     await refreshChats();
+  }
+
+  /// Tear down the engine (after a failure) and start fresh.
+  Future<void> restartEngine() async {
+    try {
+      await engine?.stop();
+    } catch (_) {}
+    engine?.dispose();
+    engine = null;
+    engineUp = false;
+    peers = [];
+    notifyListeners();
+    await startEngine();
   }
 
   LanPeer? peerById(String id) {
