@@ -53,13 +53,21 @@ jobs:
       - run: flutter build ipa --release --no-codesign
       - name: Package unsigned IPA from xcarchive
         run: |
-          APP_PATH=$(echo build/ios/archive/Runner.xcarchive/Products/Applications/*.app | head -n 1)
+          set -x
+          ls build/ios/archive/Runner.xcarchive/Products/Applications/ || true
+          shopt -s nullglob
+          apps=(build/ios/archive/Runner.xcarchive/Products/Applications/*.app)
+          echo "found ${#apps[@]} app(s)"
+          if [ ${#apps[@]} -eq 0 ]; then echo "no .app found"; exit 1; fi
+          APP_PATH="${apps[0]}"
           echo "App: $APP_PATH"
-          rm -rf Payload unsigned-ipa && mkdir -p Payload
+          rm -rf Payload unsigned-ipa && mkdir -p Payload unsigned-ipa
           cp -R "$APP_PATH" Payload/
           # strip any ad-hoc signature remnants so sideloaders can re-sign cleanly
-          codesign --remove-signature Payload/*.app 2>/dev/null || true
-          zip -r -y unsigned-ipa/Lantern-unsigned.ipa Payload
+          if [ -d "Payload/$(basename "$APP_PATH")" ]; then
+            codesign --remove-signature "Payload/$(basename "$APP_PATH")" || true
+          fi
+          (cd . && zip -r -y unsigned-ipa/Lantern-unsigned.ipa Payload)
           ls -la unsigned-ipa/
       - uses: actions/upload-artifact@v4
         with:
