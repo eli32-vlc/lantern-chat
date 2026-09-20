@@ -3,6 +3,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../core/app_state.dart';
 import 'onboarding.dart';
+import 'theme.dart';
 
 class SettingsTab extends StatelessWidget {
   final AppState state;
@@ -13,81 +14,58 @@ class SettingsTab extends StatelessWidget {
     return AnimatedBuilder(
       animation: state,
       builder: (context, _) => ListView(
+        padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Center(
             child: Column(
               children: [
                 CircleAvatar(
-                  radius: 36,
+                  radius: 30,
                   child: Text(
                     state.displayName.isEmpty
                         ? '?'
                         : state.displayName[0].toUpperCase(),
-                    style: const TextStyle(fontSize: 28),
+                    style: const TextStyle(fontSize: 22),
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(state.displayName,
                     style: const TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.bold)),
+                        fontSize: L.title, fontWeight: FontWeight.w600)),
                 Text(state.status,
-                    style: const TextStyle(color: Colors.grey)),
+                    style:
+                        TextStyle(fontSize: L.small, color: L.muted(context))),
               ],
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           ListTile(
-            leading: const Icon(Icons.edit),
-            title: const Text('Name & status'),
-            subtitle: const Text('Shown to nearby devices only'),
+            dense: true,
+            leading: const Icon(Icons.edit_outlined, size: 22),
+            title: const Text('Name & status',
+                style: TextStyle(fontSize: L.body)),
             onTap: () => _editProfile(context),
           ),
           ListTile(
-            leading: const Icon(Icons.shield_outlined),
-            title: const Text('How encryption works'),
-            subtitle: const Text('X25519 + AES-256-GCM, TOFU verified'),
-            onTap: () => showDialog(
-              context: context,
-              builder: (d) => const AlertDialog(
-                title: Text('Private by design'),
-                content: Text(
-                  '• Identity key created on first launch, never leaves this device.\n'
-                  '• Each chat uses its own secret (X25519 + HKDF).\n'
-                  '• Messages sealed with AES-256-GCM.\n'
-                  '• Verify the safety code once per device.\n'
-                  '• No accounts, no servers, no analytics.',
-                ),
-              ),
-            ),
+            dense: true,
+            leading: const Icon(Icons.share_outlined, size: 22),
+            title:
+                const Text('Share', style: TextStyle(fontSize: L.body)),
+            onTap: () => SharePlus.instance.share(ShareParams(
+                text: 'Lantern — private WiFi chat.')),
           ),
           ListTile(
-            leading: const Icon(Icons.share),
-            title: const Text('Share Lantern'),
-            onTap: () => SharePlus.instance.share(
-                ShareParams(
-                    text: 'Lantern — private WiFi chat with no accounts or tracking.')),
-          ),
-          ListTile(
-            leading: const Icon(Icons.info_outline),
-            title: const Text('About'),
-            subtitle: const Text('Lantern 0.1.0 • LAN only'),
+            dense: true,
+            leading: const Icon(Icons.info_outline, size: 22),
+            title:
+                const Text('About', style: TextStyle(fontSize: L.body)),
+            subtitle: Text('Version 0.1.0',
+                style: TextStyle(fontSize: L.small, color: L.muted(context))),
             onTap: () => showAboutDialog(
               context: context,
               applicationName: 'Lantern',
               applicationVersion: '0.1.0',
-              children: const [
-                Text('Local WiFi messaging. No accounts, no cloud, no tracking.')
-              ],
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text(
-              'Everything stays on your WiFi network. '
-              'Uninstalling removes all keys and history.',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-              textAlign: TextAlign.center,
             ),
           ),
         ],
@@ -101,15 +79,17 @@ class SettingsTab extends StatelessWidget {
     showDialog(
       context: context,
       builder: (d) => AlertDialog(
-        title: const Text('Edit profile'),
+        title: const Text('Profile', style: TextStyle(fontSize: L.title)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: name,
               maxLength: 24,
-              decoration: const InputDecoration(labelText: 'Display name'),
+              decoration: const InputDecoration(
+                  labelText: 'Display name', counterText: ''),
             ),
+            const SizedBox(height: 8),
             DropdownButtonFormField<String>(
               initialValue: status,
               items: [

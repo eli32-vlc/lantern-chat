@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
-import 'adaptive.dart';
+import 'theme.dart';
 
 const statuses = [
   'Available',
@@ -9,7 +9,6 @@ const statuses = [
   'At work',
   'In a meeting',
   'Sleeping',
-  'No Calls, Lantern Only',
 ];
 
 class OnboardingPage extends StatefulWidget {
@@ -27,27 +26,26 @@ class _OnboardingPageState extends State<OnboardingPage> {
   String? _error;
 
   @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return LanternScaffold(
-      title: 'Welcome to Lantern',
+    return Scaffold(
+      appBar: AppBar(title: const Text('Lantern')),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          const SizedBox(height: 24),
-          Icon(Icons.lan_outlined,
-              size: 72, color: Theme.of(context).colorScheme.primary),
           const SizedBox(height: 16),
-          Text('Chat over local WiFi.',
-              style: Theme.of(context).textTheme.headlineSmall,
+          Icon(Icons.lan_outlined,
+              size: 56, color: Theme.of(context).colorScheme.primary),
+          const SizedBox(height: 12),
+          const Text('Local WiFi chat',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
               textAlign: TextAlign.center),
-          const SizedBox(height: 8),
-          const Text(
-            'No accounts. No servers. No tracking.\n'
-            'Pick a display name — it only ever leaves your network '
-            'inside encrypted chats.',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
           TextField(
             controller: _name,
             maxLength: 24,
@@ -56,6 +54,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
               labelText: 'Display name',
               hintText: 'e.g. Alex',
               border: OutlineInputBorder(),
+              counterText: '',
             ),
           ),
           const SizedBox(height: 12),
@@ -72,18 +71,21 @@ class _OnboardingPageState extends State<OnboardingPage> {
             onChanged: (v) => setState(() => _status = v ?? _status),
           ),
           if (_error != null) ...[
-            const SizedBox(height: 12),
-            Text(_error!, style: const TextStyle(color: Colors.red)),
+            const SizedBox(height: 8),
+            Text(_error!,
+                style: TextStyle(
+                    fontSize: L.small,
+                    color: Theme.of(context).colorScheme.error)),
           ],
-          const SizedBox(height: 24),
-          AdaptiveButton(
-            label: _busy ? 'Starting…' : 'Start chatting',
+          const SizedBox(height: 20),
+          LButton(
+            label: _busy ? 'Starting…' : 'Start',
             onPressed: _busy
                 ? null
                 : () async {
                     final name = _name.text.trim();
                     if (name.isEmpty) {
-                      setState(() => _error = 'Please enter a display name.');
+                      setState(() => _error = 'Enter a display name.');
                       return;
                     }
                     setState(() {
@@ -91,22 +93,14 @@ class _OnboardingPageState extends State<OnboardingPage> {
                       _error = null;
                     });
                     try {
-                      await widget.state
-                          .completeOnboarding(name, _status);
+                      await widget.state.completeOnboarding(name, _status);
                     } catch (e) {
                       setState(() {
-                        _error = 'Could not start: $e';
+                        _error = 'Could not start.';
                         _busy = false;
                       });
                     }
                   },
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'Messages are end-to-end encrypted (X25519 + AES-256-GCM). '
-            'Verify the safety code on first connect.',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, color: Colors.grey),
           ),
         ],
       ),

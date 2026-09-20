@@ -9,9 +9,10 @@ import 'package:record/record.dart';
 import 'package:video_player/video_player.dart';
 
 import '../core/app_state.dart';
+import '../core/permissions.dart';
 import '../core/protocol.dart';
 import '../core/store.dart';
-import 'adaptive.dart';
+import 'theme.dart';
 
 class ChatPage extends StatefulWidget {
   final AppState state;
@@ -89,6 +90,17 @@ class _ChatPageState extends State<ChatPage> {
     _reload();
   }
 
+  Future<void> _deny(String what) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$what denied. Enable it in Settings to use this.'),
+      action: SnackBarAction(
+        label: 'Settings',
+        onPressed: () => LanPermissions.openSettings(),
+      ),
+    ));
+  }
+
   Future<void> _attach() async {
     final peer = widget.state.peerById(widget.peerId);
     if (peer == null) {
@@ -104,10 +116,15 @@ class _ChatPageState extends State<ChatPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.photo),
-              title: const Text('Photo or video'),
+              leading: const Icon(Icons.photo, size: 22),
+              title: const Text('Photo or video',
+                  style: TextStyle(fontSize: L.body)),
               onTap: () async {
                 Navigator.pop(context);
+                if (!await LanPermissions.ensurePhotos()) {
+                  _deny('Photos');
+                  return;
+                }
                 final f = await ImagePicker()
                     .pickImage(source: ImageSource.gallery);
                 if (f != null) {
@@ -118,10 +135,15 @@ class _ChatPageState extends State<ChatPage> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('Camera'),
+              leading: const Icon(Icons.camera_alt, size: 22),
+              title:
+                  const Text('Camera', style: TextStyle(fontSize: L.body)),
               onTap: () async {
                 Navigator.pop(context);
+                if (!await LanPermissions.ensureCamera()) {
+                  _deny('Camera');
+                  return;
+                }
                 final f =
                     await ImagePicker().pickImage(source: ImageSource.camera);
                 if (f != null) {
@@ -132,8 +154,8 @@ class _ChatPageState extends State<ChatPage> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.attach_file),
-              title: const Text('File'),
+              leading: const Icon(Icons.attach_file, size: 22),
+              title: const Text('File', style: TextStyle(fontSize: L.body)),
               onTap: () async {
                 Navigator.pop(context);
                 final r = await FilePicker.pickFiles();
@@ -164,11 +186,8 @@ class _ChatPageState extends State<ChatPage> {
       }
       return;
     }
-    if (!await _rec.hasPermission()) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Microphone permission denied.')));
-      }
+    if (!await LanPermissions.ensureMic()) {
+      _deny('Microphone');
       return;
     }
     final dir = Directory(
@@ -186,8 +205,21 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   Widget build(BuildContext context) {
-    return LanternScaffold(
-      title: widget.peerName,
+    // Plain Scaffold (not nested CupertinoPageScaffold): this page is pushed
+    // on the root navigator, so it gets its own bar + back button.
+    // Fixes the iOS blank-screen: no nested page scaffold.
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.peerName,
+            style: const TextStyle(
+                fontSize: L.title, fontWeight: FontWeight.w600)),
+        actions: const [
+          Padding(
+            padding: EdgeInsets.only(right: 12),
+            child: Icon(Icons.lock_outline, size: 18),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Container(
@@ -207,14 +239,16 @@ class _ChatPageState extends State<ChatPage> {
           ),
           Expanded(
             child: _msgs.isEmpty
-                ? const Center(
-                    child: Text('Start the conversation 👋\n'
-                        'Messages stay on this WiFi only.'))
+                ? const LEmpty(
+                    icon: Icons.forum_outlined,
+                    title: 'No messages',
+                    hint: 'Say hello.',
+                  )
                 : ListView.builder(
                     controller: _scroll,
                     padding: const EdgeInsets.all(12),
                     itemCount: _msgs.length,
-                    itemBuilder: (_, i) => _bubble(_msgs[i]),
+                    itemBuilder: (context, i) => _bubble(_msgs[i]),
                   ),
           ),
           SafeArea(
