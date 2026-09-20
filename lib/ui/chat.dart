@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
+import 'package:video_player/video_player.dart';
 
 import '../core/app_state.dart';
 import '../core/protocol.dart';
@@ -335,15 +337,11 @@ class _ChatPageState extends State<ChatPage> {
         }
         return Text('📷 Photo (${m.fileName ?? 'unavailable'})');
       case LanternMsgKind.voice:
-        final dur = m.durationMs != null
-            ? '${(m.durationMs! / 1000).round()}s'
-            : '';
-        return Text('🎙️ Voice message $dur\n${m.fileName ?? ''}');
+        return _VoiceBubble(m);
       case LanternMsgKind.video:
-        return Text('🎬 Video: ${m.fileName ?? ''}');
+        return _VideoBubble(m);
       case LanternMsgKind.file:
-        return Text('📎 ${m.fileName ?? 'File'}'
-            '${m.fileBytes != null ? ' • ${_kb(m.fileBytes!)}' : ''}');
+        return _FileTile(m);
       case LanternMsgKind.callEvent:
         return Text('📞 ${m.text ?? 'Call'}');
       case LanternMsgKind.system:
@@ -351,9 +349,6 @@ class _ChatPageState extends State<ChatPage> {
             style: const TextStyle(fontStyle: FontStyle.italic));
     }
   }
-
-  String _kb(int b) =>
-      b < 1024 ? '$b B' : '${(b / 1024).toStringAsFixed(1)} KB';
 
   String _time(int ts) {
     final d = DateTime.fromMillisecondsSinceEpoch(ts);
@@ -363,7 +358,7 @@ class _ChatPageState extends State<ChatPage> {
   void _msgMenu(ChatMessage m) {
     showModalBottomSheet(
       context: context,
-      builder: (_) => SafeArea(
+      builder: (sheetCtx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -371,14 +366,24 @@ class _ChatPageState extends State<ChatPage> {
               ListTile(
                 leading: const Icon(Icons.copy),
                 title: const Text('Copy'),
-                onTap: () => Navigator.pop(context),
+                onTap: () => Navigator.pop(sheetCtx),
+              ),
+            if (m.kind == LanternMsgKind.file ||
+                m.kind == LanternMsgKind.image ||
+                m.kind == LanternMsgKind.video ||
+                m.kind == LanternMsgKind.voice)
+              ListTile(
+                leading: const Icon(Icons.open_in_new),
+                title: const Text('Open file'),
+                subtitle: Text(m.filePath ?? m.fileName ?? ''),
+                onTap: () => Navigator.pop(sheetCtx),
               ),
             ListTile(
               leading: const Icon(Icons.delete, color: Colors.red),
-              title: const Text('Delete',
-                  style: TextStyle(color: Colors.red)),
+              title:
+                  const Text('Delete', style: TextStyle(color: Colors.red)),
               onTap: () async {
-                Navigator.pop(context);
+                Navigator.pop(sheetCtx);
                 await widget.state.store.db.delete('messages',
                     where: 'id = ?', whereArgs: [m.id]);
                 _reload();
@@ -387,6 +392,220 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Playable voice message bubble (file must exist locally).
+class _VoiceBubble extends StatefulWidget {
+  final ChatMessage m;
+  const _VoiceBubble(this.m);
+
+  @override
+  State<_VoiceBubble> createState() => _VoiceBubbleState();
+}
+
+class _VoiceBubbleState extends State<_VoiceBubble> {
+  final _player = AudioPlayer();
+  bool _playing = false;
+  Duration _pos = Duration.zero;
+  Duration _dur = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _player.onPlayerStateChanged.listen((s) {
+      if (mounted) {
+        setState(() {
+          _playing = (s == PlayerState.playing);
+        });
+      }
+    });
+    _player.onDurationChanged.listen((d) {
+      if (mounted) {
+        setState(() => _dur = d);
+      }
+    });
+    _player.onPositionChanged.listen((p) {
+      if (mounted) {
+        setState(() => _pos = p);
+      }
+    });
+    _player.onPlayerComplete.listen((_) {
+      if (mounted) {
+        setState(() {
+          _playing = false;
+          _pos = Duration.zero;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggle() async {
+    final p = widget.m.filePath;
+    if (p == null || !File(p).existsSync()) return;
+    if (_playing) {
+      await _player.pause();
+    } else {
+      if (_pos > Duration.zero) {
+        await _player.resume();
+      } else {
+        await _player.play(DeviceFileSource(p));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.m.filePath;
+    final exists = p != null && File(p).existsSync();
+    final label = widget.m.durationMs != null
+        ? '${(widget.m.durationMs! / 1000).round()}s'
+        : (widget.m.fileName ?? 'Voice');
+    final progress = _dur.inMilliseconds > 0
+        ? (_pos.inMilliseconds / _dur.inMilliseconds).clamp(0.0, 1.0)
+        : 0.0;
+    return SizedBox(
+      width: 210,
+      child: Row(
+        children: [
+          IconButton(
+            icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
+            onPressed: exists ? _toggle : null,
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LinearProgressIndicator(value: progress),
+                const SizedBox(height: 4),
+                Text(exists ? '🎙️ $label' : '🎙️ Voice unavailable',
+                    style: const TextStyle(fontSize: 12)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Inline video bubble with tap-to-play/pause.
+class _VideoBubble extends StatefulWidget {
+  final ChatMessage m;
+  const _VideoBubble(this.m);
+
+  @override
+  State<_VideoBubble> createState() => _VideoBubbleState();
+}
+
+class _VideoBubbleState extends State<_VideoBubble> {
+  VideoPlayerController? _ctrl;
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final p = widget.m.filePath;
+    if (p != null && File(p).existsSync()) {
+      _ctrl = VideoPlayerController.file(File(p))
+        ..initialize().then((_) {
+          if (mounted) setState(() => _ready = true);
+        });
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_ctrl == null) {
+      return Text('🎬 Video: ${widget.m.fileName ?? ''} (unavailable)');
+    }
+    if (!_ready) {
+      return const SizedBox(
+        width: 220,
+        height: 120,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          if (_ctrl!.value.isPlaying) {
+            _ctrl!.pause();
+          } else {
+            _ctrl!.play();
+          }
+        });
+      },
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: SizedBox(
+              width: 220,
+              child: AspectRatio(
+                aspectRatio: _ctrl!.value.aspectRatio == 0
+                    ? 16 / 9
+                    : _ctrl!.value.aspectRatio,
+                child: VideoPlayer(_ctrl!),
+              ),
+            ),
+          ),
+          if (!_ctrl!.value.isPlaying) ...[
+            const Icon(Icons.play_circle_fill,
+                size: 48, color: Colors.white70),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// File attachment tile with size + open hint.
+class _FileTile extends StatelessWidget {
+  final ChatMessage m;
+  const _FileTile(this.m);
+
+  String _kb(int b) =>
+      b < 1024 * 1024 ? '${(b / 1024).toStringAsFixed(1)} KB' : '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
+
+  @override
+  Widget build(BuildContext context) {
+    final exists =
+        m.filePath != null && File(m.filePath!).existsSync();
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(exists ? Icons.insert_drive_file : Icons.file_download_off,
+            size: 28),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(m.fileName ?? 'File',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text(
+                '${m.fileBytes != null ? _kb(m.fileBytes!) : ''}${exists ? '' : ' • not on this device'}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
