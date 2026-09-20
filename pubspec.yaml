@@ -25,9 +25,10 @@ dependencies:
   cryptography: ^2.9.0
   uuid: ^4.6.0
 
-  # LAN info + permissions + multicast (Android needs runtime reqs)
+  # LAN info + permissions (keep permission_handler on 12.x: 13.x needs compileSdk 37
+  # while the stable Flutter AGP supports 36 max)
   network_info_plus: ^8.2.1
-  permission_handler: ^13.0.2
+  permission_handler: ^12.0.3
 
   # Media: pick, capture, voice notes, share
   image_picker: ^1.2.3
