@@ -167,9 +167,6 @@ class _PrefixSocket extends Stream<Uint8List> implements Socket {
   Future get done => _inner.done;
 
   @override
-  set done(Future future) { _inner.done = future; }
-
-  @override
   Encoding get encoding => _inner.encoding;
 
   @override
