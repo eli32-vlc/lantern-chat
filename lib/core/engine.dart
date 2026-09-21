@@ -83,6 +83,9 @@ class LanEngine {
   /// Tracks which sockets we already replied 'hello' on — prevents the
   /// hello echo storm (A→B hello, B replies hello, A replies hello…).
   final _helloReplied = <Socket, DateTime>{};
+  /// Pending delivery acks: msgId → send time. Expired after 30s.
+  final _pendingAcks = <String, DateTime>{};
+  Timer? _ackTimer;
 
   Stream<List<LanPeer>> get peers => _peerCtrl.stream;
   Stream<LanEvent> get events => _eventCtrl.stream;
@@ -177,6 +180,10 @@ class LanEngine {
             DateTime.now().subtract(const Duration(seconds: 60));
         _peers.removeWhere((_, p) => p.lastSeen.isBefore(cutoff));
         if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
+      });
+      _ackTimer ??= Timer.periodic(const Duration(seconds: 10), (_) {
+        final cutoff = DateTime.now().subtract(const Duration(seconds: 30));
+        _pendingAcks.removeWhere((_, sent) => sent.isBefore(cutoff));
       });
     } catch (e) {
       startError = '$e';
@@ -308,7 +315,7 @@ class LanEngine {
     // Hand inbound sockets to the compat sniffer FIRST: if the first bytes
     // are not Lantern framing, the compat server answers in plaintext
     // (lines/ndjson/lenprefix) instead of dropping a "silent server".
-    CompatSniffer.route(sock, reader: FrameReader(), onLantern: (s) {
+    CompatSniffer.route(sock, onLantern: (s) {
       final reader = FrameReader();
       s.listen((chunk) async {
         try {
@@ -336,7 +343,19 @@ class LanEngine {
 
   Future<Socket?> _dial(LanPeer peer) async {
     final known = _sockets[peer.id];
-    if (known != null) return known;
+    if (known != null) {
+      // Verify socket is still alive before reusing.
+      try {
+        await known.done.timeout(Duration.zero);
+        // Future completed => socket is dead; remove and dial fresh.
+        if (_sockets[peer.id] == known) _sockets.remove(peer.id);
+      } on TimeoutException {
+        // Timeout => socket is still open (expected). Reuse it.
+        return known;
+      } catch (_) {
+        if (_sockets[peer.id] == known) _sockets.remove(peer.id);
+      }
+    }
     try {
       final sock = await Socket.connect(peer.host, peer.port,
           timeout: const Duration(seconds: 5));
@@ -422,9 +441,12 @@ class LanEngine {
           }));
         } catch (_) {}
       }
-      final known = await store.getPeer(id);
-      if (known != null && known.trusted && known.pubB64 == pk) {
-        _sessions[id] = await me.sharedKey(base64Decode(pk));
+      // Always cache the session key when we know the peer's public key.
+      // Trust is checked later in the payload handler.
+      if (pk.isNotEmpty) {
+        try {
+          _sessions[id] = await me.sharedKey(base64Decode(pk));
+        } catch (_) {}
       }
       return;
     }
@@ -439,10 +461,29 @@ class LanEngine {
       if (key == null) return;
       try {
         final plain = await PayloadBox.open(key, base64Decode(blob));
+        // Send delivery ack so the sender knows the message was received.
+        final msgId = plain['id'] as String?;
+        if (msgId != null && msgId.isNotEmpty) {
+          try {
+            sock.add(LanternProtocol.encodeFrame({
+              't': 'ack',
+              'id': msgId,
+            }));
+          } catch (_) {}
+        }
         if (!_eventCtrl.isClosed) _eventCtrl.add(LanEvent(from, plain));
       } catch (_) {
         // bad MAC => drop
       }
+      return;
+    }
+    if (t == 'ack') {
+      final msgId = json['id'] as String? ?? '';
+      if (msgId.isEmpty) return;
+      _pendingAcks.remove(msgId);
+      await store.db.update('messages', {'delivered': 1},
+          where: 'id = ?', whereArgs: [msgId]);
+      DiagLog.add('proto', 'ack received for $msgId');
       return;
     }
   }
@@ -464,6 +505,11 @@ class LanEngine {
     try {
       sock.add(frame);
       await sock.flush();
+      // Track for delivery ack (timeout after 30s).
+      final msgId = payload['id'] as String?;
+      if (msgId != null) {
+        _pendingAcks[msgId] = DateTime.now();
+      }
       return true;
     } catch (_) {
       _sockets.remove(peer.id);
@@ -483,6 +529,8 @@ class LanEngine {
   Future<void> stop() async {
     _prune?.cancel();
     _prune = null;
+    _ackTimer?.cancel();
+    _ackTimer = null;
     if (_discovery != null) {
       try {
         await stopDiscovery(_discovery!);
@@ -512,6 +560,7 @@ class LanEngine {
     }
     _sockets.clear();
     _helloReplied.clear();
+    _pendingAcks.clear();
   }
 
   void dispose() {

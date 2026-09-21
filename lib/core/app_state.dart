@@ -262,7 +262,7 @@ class AppState extends ChangeNotifier {
       text: text,
       ts: ts,
       outgoing: true,
-      delivered: ok,
+      delivered: false, // ack will set to true when peer confirms
     ));
     await refreshChats();
     return ok;
@@ -315,7 +315,7 @@ class AppState extends ChangeNotifier {
       durationMs: durationMs,
       ts: ts,
       outgoing: true,
-      delivered: ok,
+      delivered: false, // ack will set to true when peer confirms
     ));
     await refreshChats();
     return ok;

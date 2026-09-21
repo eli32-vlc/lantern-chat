@@ -37,8 +37,7 @@ class CompatSniffer {
   /// big-endian length whose value matches the remaining bytes and whose
   /// body parses as JSON with a String `t`. Anything else => compat.
   static void route(Socket sock,
-      {required FrameReader reader,
-      required void Function(Socket s) onLantern}) {
+      {required void Function(Socket s) onLantern}) {
     var done = false;
     late final StreamSubscription sub;
     final buf = BytesBuilder();
@@ -116,12 +115,11 @@ class _PrefixSocket extends Stream<Uint8List> implements Socket {
       {Function? onError, void Function()? onDone, bool? cancelOnError}) {
     if (!_wired) {
       _wired = true;
-      // Replay prefix bytes immediately, then pipe live socket data.
+      // Add prefix SYNCHRONOUSLY before subscribing to the inner socket.
+      // The non-broadcast controller buffers events until the listener
+      // (attached below) subscribes, guaranteeing prefix-first ordering.
       if (_prefix.isNotEmpty) {
-        // Schedule microtask so the listener is attached first.
-        Future.microtask(() {
-          if (!_ctrl.isClosed) _ctrl.add(Uint8List.fromList(_prefix));
-        });
+        _ctrl.add(Uint8List.fromList(_prefix));
       }
       _inner.listen(
         (c) { if (!_ctrl.isClosed) _ctrl.add(c); },
