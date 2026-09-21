@@ -72,6 +72,7 @@ class ChatMessage {
 class ChatSummary {
   final String peerId;
   final String peerName;
+  final String peerHandle; // cryptographic short handle
   final String? lastText;
   final int? lastTs;
   final int unread;
@@ -79,6 +80,7 @@ class ChatSummary {
   ChatSummary({
     required this.peerId,
     required this.peerName,
+    this.peerHandle = '',
     this.lastText,
     this.lastTs,
     this.unread = 0,
@@ -89,6 +91,7 @@ class ChatSummary {
 class KnownPeer {
   final String id;
   final String name;
+  final String handle; // cryptographic short handle
   final String status;
   final String pubB64;
   final String fingerprint;
@@ -98,6 +101,7 @@ class KnownPeer {
   KnownPeer({
     required this.id,
     required this.name,
+    this.handle = '',
     required this.status,
     required this.pubB64,
     required this.fingerprint,
@@ -108,6 +112,7 @@ class KnownPeer {
   Map<String, dynamic> toRow() => {
         'id': id,
         'name': name,
+        'handle': handle,
         'status': status,
         'pub': pubB64,
         'fingerprint': fingerprint,
@@ -124,11 +129,12 @@ class ChatStore {
     final path = p.join(dir, 'lantern.db');
     _db = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE peers(
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT '',
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, handle TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
             pub TEXT NOT NULL, fingerprint TEXT NOT NULL,
             trusted INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0
           )''');
@@ -143,6 +149,12 @@ class ChatStore {
             'CREATE INDEX idx_msg_chat_ts ON messages(chat_id, ts)');
         await db.execute('''
           CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT NOT NULL)''');
+      },
+      onUpgrade: (db, oldV, newV) async {
+        if (oldV < 2) {
+          await db.execute(
+              "ALTER TABLE peers ADD COLUMN handle TEXT NOT NULL DEFAULT ''");
+        }
       },
     );
     return _db!;
@@ -163,6 +175,7 @@ class ChatStore {
     return KnownPeer(
       id: r['id'] as String,
       name: r['name'] as String,
+      handle: (r['handle'] as String?) ?? '',
       status: (r['status'] as String?) ?? '',
       pubB64: r['pub'] as String,
       fingerprint: r['fingerprint'] as String,
@@ -177,6 +190,7 @@ class ChatStore {
         .map((r) => KnownPeer(
               id: r['id'] as String,
               name: r['name'] as String,
+              handle: (r['handle'] as String?) ?? '',
               status: (r['status'] as String?) ?? '',
               pubB64: r['pub'] as String,
               fingerprint: r['fingerprint'] as String,
@@ -245,6 +259,7 @@ class ChatStore {
       out.add(ChatSummary(
         peerId: chatId,
         peerName: name,
+        peerHandle: '',
         lastText: lastText,
         lastTs: lastTs,
         unread: (unreadRows.first['c'] as int?) ?? 0,
@@ -252,7 +267,31 @@ class ChatStore {
     }
 
     for (final peer in peers) {
-      await addSummary(peer.id, peer.name);
+      if (!seen.add(peer.id)) continue;
+      final rows = await db.query('messages',
+          where: 'chat_id = ?',
+          whereArgs: [peer.id],
+          orderBy: 'ts DESC',
+          limit: 1);
+      String? lastText;
+      int? lastTs;
+      if (rows.isNotEmpty) {
+        final m = ChatMessage.fromRow(rows.first);
+        lastText = m.text ??
+            (m.fileName != null ? '📎 ${m.fileName}' : m.kind.wire);
+        lastTs = m.ts;
+      }
+      final unreadRows = await db.rawQuery(
+          'SELECT COUNT(*) c FROM messages WHERE chat_id = ? AND outgoing = 0 AND delivered = 0',
+          [peer.id]);
+      out.add(ChatSummary(
+        peerId: peer.id,
+        peerName: peer.name,
+        peerHandle: peer.handle,
+        lastText: lastText,
+        lastTs: lastTs,
+        unread: (unreadRows.first['c'] as int?) ?? 0,
+      ));
     }
     // Compat (plaintext) chats live under chat ids 'compat:<host>:<port>'
     // with no peer row — include any that have messages.

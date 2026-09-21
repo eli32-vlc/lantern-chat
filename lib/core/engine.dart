@@ -16,6 +16,7 @@ import 'store.dart';
 class LanPeer {
   final String id;
   final String name;
+  final String handle; // cryptographic short handle
   final String status;
   final String host;
   final int port;
@@ -26,6 +27,7 @@ class LanPeer {
   LanPeer({
     required this.id,
     required this.name,
+    required this.handle,
     required this.status,
     required this.host,
     required this.port,
@@ -108,6 +110,7 @@ class LanEngine {
         LanternProtocol.txtStatus: _txtBytes(status),
         LanternProtocol.txtPort: _txtBytes('$port'),
         LanternProtocol.txtPub: _txtBytes(await me.publicKeyB64),
+        LanternProtocol.txtHandle: _txtBytes(await me.handle),
         LanternProtocol.txtVer: _txtBytes('${LanternProtocol.protoVersion}'),
       };
 
@@ -250,6 +253,7 @@ class LanEngine {
         name: _txtString(txt[LanternProtocol.txtName]).isEmpty
             ? 'Lantern user'
             : _txtString(txt[LanternProtocol.txtName]),
+        handle: _txtString(txt[LanternProtocol.txtHandle]),
         status: _txtString(txt[LanternProtocol.txtStatus]),
         host: host,
         port: port,
@@ -271,6 +275,7 @@ class LanEngine {
           await store.upsertPeer(KnownPeer(
             id: id,
             name: peer.name,
+            handle: peer.handle,
             status: peer.status,
             pubB64: peer.pubB64,
             fingerprint: fp,
@@ -282,6 +287,7 @@ class LanEngine {
           await store.upsertPeer(KnownPeer(
             id: id,
             name: peer.name,
+            handle: peer.handle,
             status: peer.status,
             pubB64: peer.pubB64,
             fingerprint: fp,
@@ -294,6 +300,7 @@ class LanEngine {
           await store.upsertPeer(KnownPeer(
             id: known.id,
             name: peer.name,
+            handle: peer.handle.isNotEmpty ? peer.handle : known.handle,
             status: peer.status,
             pubB64: known.pubB64,
             fingerprint: known.fingerprint,

@@ -34,6 +34,17 @@ class SettingsTab extends StatelessWidget {
                 L.txt(state.displayName,
                     size: L.title, weight: FontWeight.w600),
                 L.muteTxt(context, state.status),
+                if (state.identity != null)
+                  FutureBuilder<String>(
+                    future: state.identity!.handle,
+                    builder: (context, snap) {
+                      if (!snap.hasData || snap.data!.isEmpty) {
+                        return const SizedBox.shrink();
+                      }
+                      return L.txt(snap.data!,
+                          size: L.small, color: L.muted(context));
+                    },
+                  ),
               ],
             ),
           ),

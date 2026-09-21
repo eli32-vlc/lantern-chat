@@ -89,7 +89,10 @@ class ChatsTab extends StatelessWidget {
                       size: L.title,
                     ),
                   ),
-                  title: L.txt(chat.peerName,
+                  title: L.txt(
+                      chat.peerHandle.isNotEmpty
+                          ? '${chat.peerName} ${chat.peerHandle}'
+                          : chat.peerName,
                       size: L.body,
                       weight: FontWeight.w600,
                       maxLines: 1,
@@ -330,7 +333,7 @@ class _PeerRow extends StatelessWidget {
                 size: 20,
                 color: trusted ? Colors.green.shade800 : L.muted(context)),
           ),
-          title: L.txt(p.name,
+          title: L.txt(p.handle.isNotEmpty ? '${p.name} ${p.handle}' : p.name,
               size: L.body,
               weight: FontWeight.w600,
               maxLines: 1,
@@ -402,7 +405,7 @@ class _TrustSheetState extends State<TrustSheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            L.txt('Verify ${p.name}',
+            L.txt('Verify ${p.name}${p.handle.isNotEmpty ? ' ${p.handle}' : ''}',
                 size: L.title, weight: FontWeight.w600),
             const SizedBox(height: 4),
             LMute('Match this code with ${p.name}, then chat.',

@@ -19,6 +19,7 @@ class LanternProtocol {
   static const txtStatus = 'st';
   static const txtPort = 'pt';
   static const txtPub = 'pk'; // base64 raw 32-byte X25519 public key
+  static const txtHandle = 'ah'; // cryptographic short handle, e.g. '#AB3K-7MPR'
   static const txtVer = 'v';
 
   static Uint8List encodeFrame(Map<String, dynamic> json) {

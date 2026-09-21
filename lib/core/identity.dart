@@ -39,6 +39,26 @@ class DeviceIdentity {
 
   Future<String> get publicKeyB64 async => base64Encode(publicKey.bytes);
 
+  /// Cryptographic short handle derived from public key.
+  /// Format: '#AB3K-7MPR' (8 Crockford base32 chars + dash).
+  /// Deterministic: same key always produces the same handle.
+  static Future<String> deriveHandle(SimplePublicKey pub) async {
+    final h = await Sha256().hash(pub.bytes);
+    final b = h.bytes;
+    // Use first 5 bytes (40 bits) → 8 base32 chars
+    const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    final bits = (b[0] << 32) | (b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4];
+    var val = bits;
+    final chars = List<String>.filled(8, '0');
+    for (var i = 7; i >= 0; i--) {
+      chars[i] = alphabet[val & 0x1F];
+      val >>= 5;
+    }
+    return '#${chars.sublist(0, 4).join()}-${chars.sublist(4).join()}';
+  }
+
+  Future<String> get handle async => deriveHandle(publicKey);
+
   /// Short fingerprint shown on first-connect sheet, e.g. "a3f9 11c0 …".
   static Future<String> fingerprint(List<int> rawPub) async {
     final h = await Sha256().hash(rawPub);

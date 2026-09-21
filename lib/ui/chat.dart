@@ -38,6 +38,7 @@ class _ChatPageState extends State<ChatPage> {
   final _rec = AudioRecorder();
   String? _recPath;
   DateTime? _recStart;
+  String _peerHandle = ''; // loaded from store
 
   @override
   void initState() {
@@ -45,6 +46,12 @@ class _ChatPageState extends State<ChatPage> {
     widget.state.store.markRead(widget.peerId);
     _reload();
     _poll = Timer.periodic(const Duration(milliseconds: 800), (_) => _reload());
+    // Load peer handle from DB
+    widget.state.store.getPeer(widget.peerId).then((kp) {
+      if (kp != null && kp.handle.isNotEmpty && mounted) {
+        setState(() => _peerHandle = kp.handle);
+      }
+    });
   }
 
   @override
@@ -207,8 +214,17 @@ class _ChatPageState extends State<ChatPage> {
     // Fixes the iOS blank-screen: no nested page scaffold.
     return Scaffold(
       appBar: AppBar(
-        title: L.txt(widget.peerName,
-            size: L.title, weight: FontWeight.w600),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            L.txt(widget.peerName,
+                size: L.title, weight: FontWeight.w600),
+            if (_peerHandle.isNotEmpty)
+              L.txt(_peerHandle,
+                  size: L.small, color: L.muted(context)),
+          ],
+        ),
         actions: const [
           Padding(
             padding: EdgeInsets.only(right: 12),
