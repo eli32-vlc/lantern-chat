@@ -17,6 +17,14 @@ class DeviceIdentity {
 
   DeviceIdentity._(this.id, this.keyPair, this.publicKey);
 
+  /// Create from imported key material (used by QR import).
+  static Future<DeviceIdentity> fromSeed(String id, List<int> seed) async {
+    final x25519 = X25519();
+    final kp = await x25519.newKeyPairFromSeed(seed);
+    final pub = await kp.extractPublicKey();
+    return DeviceIdentity._(id, kp, pub);
+  }
+
   static Future<DeviceIdentity> loadOrCreate({
     required Future<Map<String, String>?> Function() read,
     required Future<void> Function(Map<String, String>) write,
@@ -118,8 +126,18 @@ class AccountIdentity {
 
   AccountIdentity._(this.id, this.signKP, this.signPub);
 
+  /// Create from imported key material (used by QR import).
+  static Future<AccountIdentity> fromSeed(String id, List<int> seed) async {
+    final ed25519 = Ed25519();
+    final kp = await ed25519.newKeyPairFromSeed(seed);
+    final pub = await kp.extractPublicKey();
+    return AccountIdentity._(id, kp, pub);
+  }
+
   static AccountIdentity? _instance;
   static AccountIdentity get instance => _instance!;
+  /// Set instance (used by QR import).
+  static set instance(AccountIdentity v) => _instance = v;
 
   static Future<AccountIdentity> loadOrCreate({
     required Future<String?> Function(String key) readKv,

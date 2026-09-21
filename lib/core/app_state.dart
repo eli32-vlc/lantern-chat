@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 import 'compat.dart';
 import 'engine.dart';
@@ -326,6 +330,98 @@ class AppState extends ChangeNotifier {
     ));
     await refreshChats();
     return ok;
+  }
+
+  // ---- Account export / import (QR key transfer) ----
+
+  /// Generate encrypted QR data for linking another device.
+  /// Returns [qrData, passphrase] where qrData is the base64 QR content
+  /// and passphrase is the 6-digit code the user must enter on the new device.
+  Future<(String, String)> exportAccountQr() async {
+    if (account == null) throw StateError('No account');
+    final signSeed = await account!.signKP.extractPrivateKeyBytes();
+    final plain = utf8.encode(jsonEncode({
+      'account_id': account!.id,
+      'sign_seed': base64Encode(signSeed),
+      'name': displayName,
+      'status': status,
+      'v': 1,
+    }));
+    // Generate random 6-digit passphrase
+    final rng = Random.secure();
+    final passcode = List.generate(6, (_) => rng.nextInt(10)).join();
+    // Derive encryption key from passphrase via HKDF
+    final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
+    final key = await hkdf.deriveKey(
+      secretKey: SecretKey(utf8.encode(passcode)),
+      nonce: utf8.encode('lantern-export-v1'),
+      info: utf8.encode('account-export'),
+    );
+    final keyBytes = await key.extractBytes();
+    // AES-GCM encrypt
+    final algo = AesGcm.with256bits();
+    final nonce = algo.newNonce();
+    final box = await algo.encrypt(plain, secretKey: SecretKey(keyBytes), nonce: nonce);
+    final packed = Uint8List(nonce.length + box.cipherText.length + box.mac.bytes.length);
+    packed.setAll(0, nonce);
+    packed.setAll(nonce.length, box.cipherText);
+    packed.setAll(nonce.length + box.cipherText.length, box.mac.bytes);
+    return (base64Encode(packed), passcode);
+  }
+
+  /// Import account from QR data + passphrase. Replaces current account.
+  /// Returns true on success.
+  Future<bool> importAccountFromQr(String qrB64, String passcode) async {
+    try {
+      final packed = base64Decode(qrB64);
+      // Derive key from passphrase
+      final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
+      final key = await hkdf.deriveKey(
+        secretKey: SecretKey(utf8.encode(passcode)),
+        nonce: utf8.encode('lantern-export-v1'),
+        info: utf8.encode('account-export'),
+      );
+      final keyBytes = await key.extractBytes();
+      // AES-GCM decrypt
+      final algo = AesGcm.with256bits();
+      final nonce = packed.sublist(0, 12);
+      final macBytes = packed.sublist(packed.length - 16);
+      final cipher = packed.sublist(12, packed.length - 16);
+      final box = SecretBox(cipher, nonce: nonce, mac: Mac(macBytes));
+      final clear = await algo.decrypt(box, secretKey: SecretKey(keyBytes));
+      final data = jsonDecode(utf8.decode(clear)) as Map<String, dynamic>;
+      final accountId = data['account_id'] as String;
+      final signSeed = base64Decode(data['sign_seed'] as String);
+      final name = data['name'] as String? ?? displayName;
+      final newStatus = data['status'] as String? ?? status;
+      // Import account: create Ed25519 keypair from seed
+      final imported = await AccountIdentity.fromSeed(accountId, signSeed);
+      // Persist
+      await store.setKv('account_id', accountId);
+      await store.setKv('account_sign_priv', base64Encode(signSeed));
+      AccountIdentity.instance = imported;
+      account = imported;
+      // Update profile
+      displayName = name;
+      status = newStatus;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('name', displayName);
+      await prefs.setString('status', status);
+      await prefs.setBool('onboarded', true);
+      onboarded = true;
+      // Generate a new device keypair (this device is new to the account)
+      final deviceSeed = List<int>.generate(32, (_) => Random.secure().nextInt(256));
+      final deviceId = const Uuid().v4();
+      await store.setKv('device_id', deviceId);
+      await store.setKv('device_priv', base64Encode(deviceSeed));
+      identity = await DeviceIdentity.fromSeed(deviceId, deviceSeed);
+      // Restart engine with new identity
+      await restartEngine();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   Future<void> dismissTrust() async {

@@ -38,6 +38,10 @@ dependencies:
   record: ^7.1.1
   share_plus: ^13.3.0
 
+  # QR code: export identity + scan to link
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.2.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

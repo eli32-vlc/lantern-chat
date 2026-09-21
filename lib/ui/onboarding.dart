@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
+import 'qr_screens.dart';
 import 'theme.dart';
 
 const statuses = [
@@ -98,6 +99,21 @@ class _OnboardingPageState extends State<OnboardingPage> {
                       });
                     }
                   },
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.qr_code_scanner, size: 18),
+              const SizedBox(width: 6),
+              GestureDetector(
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => QrImportScreen(state: widget.state))),
+                child: L.txt('Already have an account? Import',
+                    size: L.body,
+                    color: Theme.of(context).colorScheme.primary),
+              ),
+            ],
           ),
         ],
       ),

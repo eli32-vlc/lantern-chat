@@ -4,6 +4,7 @@ import 'package:share_plus/share_plus.dart';
 import '../core/app_state.dart';
 import 'diag_page.dart';
 import 'onboarding.dart';
+import 'qr_screens.dart';
 import 'theme.dart';
 
 class SettingsTab extends StatelessWidget {
@@ -54,6 +55,22 @@ class SettingsTab extends StatelessWidget {
             leading: const Icon(Icons.edit_outlined, size: 22),
             title: L.txt('Name & status', size: L.body),
             onTap: () => _editProfile(context),
+          ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.qr_code_2, size: 22),
+            title: L.txt('Link another device', size: L.body),
+            subtitle: L.muteTxt(context, 'Show QR code to link a second device'),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => QrExportScreen(state: state))),
+          ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.qr_code_scanner, size: 22),
+            title: L.txt('Import account', size: L.body),
+            subtitle: L.muteTxt(context, 'Scan QR from another device'),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => QrImportScreen(state: state))),
           ),
           ListTile(
             dense: true,
