@@ -122,7 +122,7 @@ class AccountIdentity {
   static AccountIdentity get instance => _instance!;
 
   static Future<AccountIdentity> loadOrCreate({
-    required Future<Map<String, String>?> Function(String key) readKv,
+    required Future<String?> Function(String key) readKv,
     required Future<void> Function(String key, String value) writeKv,
   }) async {
     if (_instance != null) return _instance!;
@@ -138,7 +138,7 @@ class AccountIdentity {
     }
     final kp = await ed25519.newKeyPair();
     final pub = await kp.extractPublicKey();
-    final seed = await kp.extractSeed();
+    final seed = await kp.extractPrivateKeyBytes();
     final fresh = AccountIdentity._(const Uuid().v4(), kp, pub);
     await writeKv('account_id', fresh.id);
     await writeKv('account_sign_priv', base64Encode(seed));

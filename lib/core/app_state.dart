@@ -93,6 +93,7 @@ class AppState extends ChangeNotifier {
       displayName: displayName,
       status: status,
     );
+    engine!.account = account;
     // start() never throws now, but guard anyway: the Peers tab must never
     // hang on a spinner because of an engine exception.
     try {

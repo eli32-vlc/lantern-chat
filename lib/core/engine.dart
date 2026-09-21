@@ -436,8 +436,8 @@ class LanEngine {
     if (t == 'hello') {
       final id = json['id'] as String? ?? '';
       final pk = json['pk'] as String? ?? '';
-      final peerHandle = json['ah'] as String? ?? '';
-      final peerAccountId = json['aid'] as String? ?? '';
+      final ah = json['ah'] as String? ?? '';
+      final aid = json['aid'] as String? ?? '';
       if (id.isEmpty || pk.isEmpty || id == me.id) return;
       // Track inbound socket by peer id so sendTo can reuse it.
       // This prevents duplicate dials and the hello echo loop.
@@ -474,6 +474,23 @@ class LanEngine {
         try {
           _sessions[id] = await me.sharedKey(base64Decode(pk));
         } catch (_) {}
+      }
+      // Update peer's handle and account ID from hello frame.
+      if (ah.isNotEmpty || aid.isNotEmpty) {
+        final existing = await store.getPeer(id);
+        if (existing != null) {
+          await store.upsertPeer(KnownPeer(
+            id: existing.id,
+            name: existing.name,
+            handle: ah.isNotEmpty ? ah : existing.handle,
+            accountId: aid.isNotEmpty ? aid : existing.accountId,
+            status: existing.status,
+            pubB64: existing.pubB64,
+            fingerprint: existing.fingerprint,
+            trusted: existing.trusted,
+            lastSeen: existing.lastSeen,
+          ));
+        }
       }
       return;
     }
