@@ -768,11 +768,8 @@ class LanEngine {
       await store.addGroupMember(gid, mid);
     }
     // Send invites to all members
-    final gk = GroupKey(secret);
     final secretB64 = base64Encode(secret);
-    final encSecret = await PayloadBox.seal(
-        List<int>.filled(32, 0), {'secret': secretB64});
-    // Actually encrypt with each member's pairwise key
+    // Encrypt with each member's pairwise key
     for (final mid in memberIds) {
       final known = await store.getPeer(mid);
       if (known == null || !known.trusted) continue;
