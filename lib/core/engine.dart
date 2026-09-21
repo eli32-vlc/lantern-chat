@@ -68,6 +68,7 @@ class LanEngine {
 
   ServerSocket? _server;
   Registration? _reg;
+  Registration? _regAirchat; // AirChat compat mDNS registration
   Discovery? _discovery;
   Timer? _prune;
 
@@ -124,6 +125,8 @@ class LanEngine {
       DiagLog.add('engine', 'listening on port $port');
       _server!.listen(_onInbound);
 
+      // Register on BOTH _lantern._tcp (our native protocol) and _airchat._tcp
+      // so AirChat can discover us as a peer on the LAN.
       final svc = Service(
         name: '${LanternProtocol.serviceNamePrefix}${me.id.substring(0, 8)}',
         type: LanternProtocol.serviceType,
@@ -135,9 +138,24 @@ class LanEngine {
         DiagLog.add(
             'mdns', 'registered ${svc.name} type=${svc.type} port=$port');
       } catch (e) {
-        // Registration can fail (name clash, NSD off) while the TCP server
-        // is fine — discovery of others still works.
         DiagLog.add('mdns', 'register failed: $e');
+      }
+      // AirChat compat registration: same port, AirChat-style TXT keys.
+      try {
+        final airchatSvc = Service(
+          name: displayName,
+          type: '_airchat._tcp',
+          port: port,
+          txt: {
+            'id': _txtBytes(me.id),
+            'name': _txtBytes(displayName),
+          },
+        );
+        _regAirchat = await register(airchatSvc);
+        DiagLog.add('mdns',
+            'registered ${airchatSvc.name} type=_airchat._tcp port=$port');
+      } catch (e) {
+        DiagLog.add('mdns', 'airchat register failed: $e');
       }
 
       try {
@@ -476,6 +494,12 @@ class LanEngine {
         await unregister(_reg!);
       } catch (_) {}
       _reg = null;
+    }
+    if (_regAirchat != null) {
+      try {
+        await unregister(_regAirchat!);
+      } catch (_) {}
+      _regAirchat = null;
     }
     try {
       await _server?.close();

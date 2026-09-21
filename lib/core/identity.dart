@@ -47,6 +47,25 @@ class DeviceIdentity {
     return List.generate(4, (i) => hex.substring(i * 4, i * 4 + 4)).join(' ');
   }
 
+  /// Combined fingerprint for verification: SHA256 of both public keys
+  /// sorted lexicographically. Same on both devices so users can compare.
+  static Future<String> combinedFingerprint(
+      List<int> rawPubA, List<int> rawPubB) async {
+    final sorted = [rawPubA, rawPubB]
+      ..sort((a, b) {
+        for (var i = 0; i < a.length && i < b.length; i++) {
+          if (a[i] != b[i]) return a[i].compareTo(b[i]);
+        }
+        return a.length.compareTo(b.length);
+      });
+    final combined = <int>[...sorted[0], ...sorted[1]];
+    final h = await Sha256().hash(combined);
+    final hex =
+        h.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return List.generate(4, (i) => hex.substring(i * 8, i * 8 + 8))
+        .join('\n');
+  }
+
   Future<List<int>> sharedKey(List<int> peerPubBytes) async {
     final remote = SimplePublicKey(peerPubBytes, type: KeyPairType.x25519);
     final secret = await X25519()

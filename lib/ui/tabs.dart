@@ -383,10 +383,12 @@ class _TrustSheetState extends State<TrustSheet> {
 
   Future<void> _load() async {
     try {
-      final raw = base64Decode(widget.peer.pubB64 as String);
-      final fp = await DeviceIdentity.fingerprint(raw);
+      final peerRaw = base64Decode(widget.peer.pubB64 as String);
+      final myRaw = widget.state.identity!.publicKey.bytes;
+      final fp =
+          await DeviceIdentity.combinedFingerprint(myRaw, peerRaw);
       if (mounted) setState(() => _fp = fp);
-    } catch (_) {
+    } catch (e) {
       if (mounted) setState(() => _fp = 'unavailable');
     }
   }

@@ -100,31 +100,36 @@ class CompatSniffer {
 }
 
 /// A Socket wrapper that replays already-read bytes first, then live data.
+/// Uses a single-subscription controller (not broadcast) so no events are
+/// dropped between construction and listen(). The inner socket subscription
+/// is created lazily in listen() to avoid data loss.
 class _PrefixSocket extends Stream<Uint8List> implements Socket {
   final Socket _inner;
   final List<int> _prefix;
-  final _ctrl = StreamController<Uint8List>.broadcast();
+  final _ctrl = StreamController<Uint8List>();
+  bool _wired = false;
 
-  _PrefixSocket(this._inner, List<int> prefix) : _prefix = prefix {
-    _inner.listen((c) {
-      if (!_ctrl.isClosed) _ctrl.add(c);
-    },
-        onError: _ctrl.addError,
-        onDone: () {
-          if (!_ctrl.isClosed) _ctrl.close();
-        });
-  }
-
-  /// Emits the replayed prefix, then live socket bytes.
-  Stream<Uint8List> get stream async* {
-    if (_prefix.isNotEmpty) yield Uint8List.fromList(_prefix);
-    yield* _ctrl.stream;
-  }
+  _PrefixSocket(this._inner, List<int> prefix) : _prefix = prefix;
 
   @override
   StreamSubscription<Uint8List> listen(void Function(Uint8List event)? onData,
       {Function? onError, void Function()? onDone, bool? cancelOnError}) {
-    return stream.listen(onData,
+    if (!_wired) {
+      _wired = true;
+      // Replay prefix bytes immediately, then pipe live socket data.
+      if (_prefix.isNotEmpty) {
+        // Schedule microtask so the listener is attached first.
+        Future.microtask(() {
+          if (!_ctrl.isClosed) _ctrl.add(Uint8List.fromList(_prefix));
+        });
+      }
+      _inner.listen(
+        (c) { if (!_ctrl.isClosed) _ctrl.add(c); },
+        onError: (Object e) { if (!_ctrl.isClosed) _ctrl.addError(e); },
+        onDone: () { if (!_ctrl.isClosed) _ctrl.close(); },
+      );
+    }
+    return _ctrl.stream.listen(onData,
         onError: onError, onDone: onDone, cancelOnError: cancelOnError);
   }
 

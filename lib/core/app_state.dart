@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -94,6 +95,13 @@ class AppState extends ChangeNotifier {
       engine!.startError = '$e';
     }
     engineUp = true;
+    // Start Android foreground service to keep discovery alive in background.
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        await const MethodChannel('com.lantern/service')
+            .invokeMethod('startService');
+      } catch (_) {}
+    }
     _peerSub = engine!.peers.listen((p) {
       peers = p;
       notifyListeners();
