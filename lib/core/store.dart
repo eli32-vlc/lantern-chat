@@ -132,7 +132,7 @@ class ChatStore {
     final path = p.join(dir, 'lantern.db');
     _db = await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE peers(
@@ -158,6 +158,22 @@ class ChatStore {
             peer_id TEXT PRIMARY KEY,
             last_sync_ts INTEGER NOT NULL DEFAULT 0
           )''');
+        await db.execute('''
+          CREATE TABLE groups(
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            group_secret BLOB NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+          )''');
+        await db.execute('''
+          CREATE TABLE group_members(
+            group_id TEXT NOT NULL,
+            peer_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            joined_at INTEGER NOT NULL,
+            PRIMARY KEY (group_id, peer_id)
+          )''');
       },
       onUpgrade: (db, oldV, newV) async {
         if (oldV < 2) {
@@ -173,6 +189,24 @@ class ChatStore {
             CREATE TABLE IF NOT EXISTS sync_state(
               peer_id TEXT PRIMARY KEY,
               last_sync_ts INTEGER NOT NULL DEFAULT 0
+            )''');
+        }
+        if (oldV < 5) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS groups(
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              group_secret BLOB NOT NULL,
+              created_by TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            )''');
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS group_members(
+              group_id TEXT NOT NULL,
+              peer_id TEXT NOT NULL,
+              role TEXT NOT NULL DEFAULT 'member',
+              joined_at INTEGER NOT NULL,
+              PRIMARY KEY (group_id, peer_id)
             )''');
         }
       },
@@ -325,6 +359,20 @@ class ChatStore {
       final label = id.startsWith('compat:') ? id.substring(7) : id;
       await addSummary(id, 'Plaintext $label');
     }
+    // Group chats: include any that have messages
+    final groupRows = await db.rawQuery(
+        'SELECT DISTINCT chat_id FROM messages WHERE chat_id LIKE ?',
+        ['grp-%']);
+    for (final r in groupRows) {
+      final gid = r['chat_id'] as String;
+      if (seen.contains(gid)) continue;
+      final g = await getGroup(gid);
+      final gname = g != null ? g['name'] as String : 'Group';
+      // Only add if the group exists in our DB (we're a member)
+      if (g != null) {
+        await addSummary(gid, '\u{1F465} $gname');
+      }
+    }
     out.sort((a, b) => (b.lastTs ?? 0).compareTo(a.lastTs ?? 0));
     return out;
   }
@@ -350,6 +398,56 @@ class ChatStore {
     await db.insert('sync_state',
         {'peer_id': peerId, 'last_sync_ts': ts},
         conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  // ---- groups ----
+  Future<void> storeGroup(String id, String name, List<int> secret,
+      {required String createdBy}) async {
+    await db.insert('groups', {
+      'id': id,
+      'name': name,
+      'group_secret': Uint8List.fromList(secret),
+      'created_by': createdBy,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> addGroupMember(String groupId, String peerId,
+      {String role = 'member'}) async {
+    await db.insert('group_members', {
+      'group_id': groupId,
+      'peer_id': peerId,
+      'role': role,
+      'joined_at': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> removeGroupMember(String groupId, String peerId) async {
+    await db.delete('group_members',
+        where: 'group_id = ? AND peer_id = ?',
+        whereArgs: [groupId, peerId]);
+  }
+
+  Future<List<String>> groupMemberIds(String groupId) async {
+    final rows = await db.query('group_members',
+        where: 'group_id = ?', whereArgs: [groupId]);
+    return rows.map((r) => r['peer_id'] as String).toList();
+  }
+
+  Future<Map<String, dynamic>?> getGroup(String groupId) async {
+    final rows = await db.query('groups',
+        where: 'id = ?', whereArgs: [groupId]);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  Future<List<Map<String, dynamic>>> allGroups() async {
+    return db.query('groups', orderBy: 'created_at DESC');
+  }
+
+  Future<bool> isInGroup(String groupId) async {
+    final rows = await db.query('groups',
+        where: 'id = ?', whereArgs: [groupId]);
+    return rows.isNotEmpty;
   }
 
   // ---- kv ----

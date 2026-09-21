@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:nsd/nsd.dart';
@@ -664,6 +665,58 @@ class LanEngine {
       if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
       return;
     }
+    // ---- Group protocol ----
+    if (t == 'group_invite') {
+      final from = json['from'] as String? ?? dialPeerId ?? '';
+      final gid = json['gid'] as String? ?? '';
+      final gname = json['gname'] as String? ?? 'Group';
+      final gsecB64 = json['gsec'] as String? ?? '';
+      if (from.isEmpty || gid.isEmpty || gsecB64.isEmpty) return;
+      // Must be from a trusted peer
+      final known = await store.getPeer(from);
+      if (known == null || !known.trusted) return;
+      // Decrypt the group secret with our pairwise key
+      final key = await _sessionFor(from, known.pubB64);
+      if (key == null) return;
+      try {
+        final plain = await PayloadBox.open(key, base64Decode(gsecB64));
+        final groupSecret = base64Decode(plain['secret'] as String);
+        // Store the group
+        await store.storeGroup(gid, gname, groupSecret, createdBy: from);
+        await store.addGroupMember(gid, from, role: 'admin');
+        await store.addGroupMember(gid, me.id);
+        DiagLog.add('group', 'joined group $gname ($gid)');
+        if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
+      } catch (e) {
+        DiagLog.add('group', 'invite decrypt failed: $e');
+      }
+      return;
+    }
+    if (t == 'group_leave') {
+      final from = json['from'] as String? ?? dialPeerId ?? '';
+      final gid = json['gid'] as String? ?? '';
+      if (from.isEmpty || gid.isEmpty) return;
+      await store.removeGroupMember(gid, from);
+      DiagLog.add('group', '$from left group $gid');
+      return;
+    }
+    if (t == 'group_key_rotate') {
+      final from = json['from'] as String? ?? dialPeerId ?? '';
+      final gid = json['gid'] as String? ?? '';
+      final gsecB64 = json['gsec'] as String? ?? '';
+      if (from.isEmpty || gid.isEmpty || gsecB64.isEmpty) return;
+      final known = await store.getPeer(from);
+      if (known == null || !known.trusted) return;
+      final key = await _sessionFor(from, known.pubB64);
+      if (key == null) return;
+      try {
+        final plain = await PayloadBox.open(key, base64Decode(gsecB64));
+        final newSecret = base64Decode(plain['secret'] as String);
+        await store.storeGroup(gid, '', newSecret, createdBy: from);
+        DiagLog.add('group', 'key rotated for $gid');
+      } catch (_) {}
+      return;
+    }
   }
 
   /// Send an encrypted payload to a peer. Requires trusted pin.
@@ -701,6 +754,101 @@ class LanEngine {
       _sessions[peer.id] = await me.sharedKey(base64Decode(peer.pubB64));
     }
   }
+
+  // ---- Group operations ----
+
+  /// Create a group and invite initial members.
+  Future<String> createGroup(String name, List<String> memberIds) async {
+    final gid = 'grp-${const Uuid().v4()}';
+    final secret = List<int>.generate(32, (_) => _secureRng.nextInt(256));
+    // Store locally
+    await store.storeGroup(gid, name, secret, createdBy: me.id);
+    await store.addGroupMember(gid, me.id, role: 'admin');
+    for (final mid in memberIds) {
+      await store.addGroupMember(gid, mid);
+    }
+    // Send invites to all members
+    final gk = GroupKey(secret);
+    final secretB64 = base64Encode(secret);
+    final encSecret = await PayloadBox.seal(
+        List<int>.filled(32, 0), {'secret': secretB64});
+    // Actually encrypt with each member's pairwise key
+    for (final mid in memberIds) {
+      final known = await store.getPeer(mid);
+      if (known == null || !known.trusted) continue;
+      final key = await _sessionFor(mid, known.pubB64);
+      if (key == null) continue;
+      final sealed = await PayloadBox.seal(key, {'secret': secretB64});
+      final peer = _peers.values.where((p) => p.id == mid).firstOrNull;
+      if (peer == null) continue;
+      final sock = await _dial(peer);
+      if (sock == null) continue;
+      try {
+        sock.add(LanternProtocol.encodeFrame({
+          't': 'group_invite',
+          'from': me.id,
+          'gid': gid,
+          'gname': name,
+          'gsec': base64Encode(sealed),
+        }));
+      } catch (_) {}
+    }
+    DiagLog.add('group', 'created group $name ($gid) with ${memberIds.length} members');
+    return gid;
+  }
+
+  /// Send a message to a group.
+  Future<bool> sendGroupMessage(
+      String groupId, List<int> groupSecret, Map<String, dynamic> payload) async {
+    final gk = GroupKey(groupSecret);
+    final sealed = await gk.encrypt(payload);
+    final members = await store.groupMemberIds(groupId);
+    var anySent = false;
+    for (final mid in members) {
+      if (mid == me.id) continue;
+      final peer = _peers.values.where((p) => p.id == mid).firstOrNull;
+      if (peer == null) continue;
+      final sock = await _dial(peer);
+      if (sock == null) continue;
+      try {
+        sock.add(LanternProtocol.encodeFrame({
+          't': 'payload',
+          'from': me.id,
+          'blob': base64Encode(sealed),
+          'gid': groupId,
+        }));
+        anySent = true;
+      } catch (_) {}
+    }
+    return anySent;
+  }
+
+  /// Leave a group.
+  Future<void> leaveGroup(String groupId) async {
+    final members = await store.groupMemberIds(groupId);
+    for (final mid in members) {
+      if (mid == me.id) continue;
+      final peer = _peers.values.where((p) => p.id == mid).firstOrNull;
+      if (peer == null) continue;
+      final sock = await _dial(peer);
+      if (sock == null) continue;
+      try {
+        sock.add(LanternProtocol.encodeFrame({
+          't': 'group_leave',
+          'from': me.id,
+          'gid': groupId,
+        }));
+      } catch (_) {}
+    }
+    await store.removeGroupMember(groupId, me.id);
+    // Delete group data if we're the last member
+    final remaining = await store.groupMemberIds(groupId);
+    if (remaining.isEmpty) {
+      await store.db.delete('groups', where: 'id = ?', whereArgs: [groupId]);
+    }
+  }
+
+  static final _secureRng = Random.secure();
 
   String messageId() => const Uuid().v4();
 

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
@@ -8,6 +9,7 @@ import '../core/identity.dart';
 import '../core/interop.dart';
 import '../core/permissions.dart';
 import '../core/store.dart';
+import 'group_screens.dart';
 import 'interop_chat.dart';
 import 'theme.dart';
 
@@ -31,10 +33,25 @@ class ChatsTab extends StatelessWidget {
       animation: state,
       builder: (context, _) {
         if (state.chats.isEmpty) {
-          return const LEmpty(
-            icon: Icons.forum_outlined,
-            title: 'No chats',
-            hint: 'Go to Peers to find devices.',
+          return Stack(
+            children: [
+              const LEmpty(
+                icon: Icons.forum_outlined,
+                title: 'No chats',
+                hint: 'Go to Peers to find devices.',
+              ),
+              Positioned(
+                right: 16,
+                bottom: 16,
+                child: FloatingActionButton(
+                  onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                          builder: (_) => GroupCreateScreen(state: state))),
+                  tooltip: 'New group',
+                  child: const Icon(Icons.group_add),
+                ),
+              ),
+            ],
           );
         }
         return RefreshIndicator(
@@ -377,6 +394,7 @@ class TrustSheet extends StatefulWidget {
 
 class _TrustSheetState extends State<TrustSheet> {
   String _fp = '…';
+  String _safetyNum = '';
 
   @override
   void initState() {
@@ -390,7 +408,25 @@ class _TrustSheetState extends State<TrustSheet> {
       final myRaw = widget.state.identity!.publicKey.bytes;
       final fp =
           await DeviceIdentity.combinedFingerprint(myRaw, peerRaw);
-      if (mounted) setState(() => _fp = fp);
+      // Safety number: SHA256 of sorted public keys, displayed as digits
+      final sorted = [myRaw, peerRaw]
+        ..sort((a, b) {
+          for (var i = 0; i < a.length && i < b.length; i++) {
+            if (a[i] != b[i]) return a[i].compareTo(b[i]);
+          }
+          return a.length.compareTo(b.length);
+        });
+      final combined = [...sorted[0], ...sorted[1]];
+      final h = await Sha256().hash(combined);
+      final hex = h.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      // Format as groups of 5 digits
+      final numStr = BigInt.parse(hex, radix: 16).toString();
+      final padded = numStr.padLeft(60, '0');
+      final groups = <String>[];
+      for (var i = 0; i < 60; i += 5) {
+        groups.add(padded.substring(i, i + 5));
+      }
+      if (mounted) setState(() { _fp = fp; _safetyNum = groups.join(' '); });
     } catch (e) {
       if (mounted) setState(() => _fp = 'unavailable');
     }
@@ -428,6 +464,18 @@ class _TrustSheetState extends State<TrustSheet> {
                       decoration: TextDecoration.none,
                       color: Theme.of(context).colorScheme.onSurface)),
             ),
+            if (_safetyNum.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              L.txt('Safety number', size: L.tiny, color: L.muted(context)),
+              const SizedBox(height: 4),
+              SelectableText(_safetyNum,
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      letterSpacing: 0.8,
+                      decoration: TextDecoration.none,
+                      color: L.muted(context))),
+            ],
             const SizedBox(height: 14),
             Row(
               children: [

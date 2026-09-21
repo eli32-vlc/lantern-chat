@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../core/app_state.dart';
 import 'chat.dart';
 import 'compat_chat.dart';
+import 'group_screens.dart';
 import 'onboarding.dart';
 import 'settings.dart';
 import 'tabs.dart';
@@ -23,6 +24,17 @@ class _HomeShellState extends State<HomeShell> {
   bool get _cupertino => L.cupertino(context);
 
   void _openChat(String peerId, String name) {
+    // Group chats
+    if (peerId.startsWith('grp-')) {
+      Navigator.of(context).push(
+        _cupertino
+            ? CupertinoPageRoute(builder: (_) => GroupChatPage(
+                state: widget.state, groupId: peerId, groupName: name))
+            : MaterialPageRoute(builder: (_) => GroupChatPage(
+                state: widget.state, groupId: peerId, groupName: name)),
+      );
+      return;
+    }
     // Compat (plaintext) chats open the compat page; E2EE peers open ChatPage.
     // Push on the tab's own navigator (NOT rootNavigator): each
     // CupertinoTabView owns a navigator, and rootNavigator pushes from

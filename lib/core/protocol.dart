@@ -23,6 +23,11 @@ class LanternProtocol {
   static const txtAccountId = 'aid'; // account UUID (shared across devices)
   static const txtVer = 'v';
 
+  // Group protocol frame types
+  static const frameGroupInvite = 'group_invite';
+  static const frameGroupLeave = 'group_leave';
+  static const frameGroupKeyRotate = 'group_key_rotate';
+
   static Uint8List encodeFrame(Map<String, dynamic> json) {
     final body = utf8.encode(jsonEncode(json));
     final out = Uint8List(4 + body.length);

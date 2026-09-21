@@ -185,6 +185,35 @@ class AccountIdentity {
   Future<String> get handle => deriveHandle(signPub);
 }
 
+/// Group encryption key. Derived from a shared group secret via HKDF.
+/// All group members derive the same key and use it for AES-GCM encryption.
+class GroupKey {
+  final List<int> secret;
+  List<int>? _derived;
+
+  GroupKey(this.secret);
+
+  Future<List<int>> get key async {
+    if (_derived != null) return _derived!;
+    final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
+    final derived = await hkdf.deriveKey(
+      secretKey: SecretKey(secret),
+      nonce: utf8.encode('lantern-group-v1'),
+      info: utf8.encode('group-encrypt'),
+    );
+    _derived = await derived.extractBytes();
+    return _derived!;
+  }
+
+  Future<Uint8List> encrypt(Map<String, dynamic> plain) async {
+    return PayloadBox.seal(await key, plain);
+  }
+
+  Future<Map<String, dynamic>> decrypt(List<int> cipher) async {
+    return PayloadBox.open(await key, cipher);
+  }
+}
+
 /// AES-256-GCM payload box. Nonce = 12 random bytes prepended to ciphertext.
 class PayloadBox {
   static final _algo = AesGcm.with256bits();

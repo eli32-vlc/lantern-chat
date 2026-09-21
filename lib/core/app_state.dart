@@ -134,9 +134,11 @@ class AppState extends ChangeNotifier {
     final kind = e.json['kind'] as String? ?? 'text';
     final msgId = e.json['id'] as String? ?? engine!.messageId();
     final ts = e.json['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+    final gid = e.json['gid'] as String?; // group message
+    final chatId = gid ?? e.peerId;
     final m = ChatMessage(
       id: msgId,
-      chatId: e.peerId,
+      chatId: chatId,
       senderId: e.peerId,
       kind: LanternMsgKindX.fromWire(kind),
       text: e.json['text'] as String?,
@@ -422,6 +424,55 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       return false;
     }
+  }
+
+  // ---- Group operations ----
+
+  /// Create a group with selected peers.
+  Future<String?> createGroup(String name, List<String> memberIds) async {
+    if (engine == null) return null;
+    final gid = await engine!.createGroup(name, memberIds);
+    await refreshChats();
+    return gid;
+  }
+
+  /// Send a text message to a group.
+  Future<bool> sendGroupText(String groupId, String text) async {
+    if (engine == null) return false;
+    final g = await store.getGroup(groupId);
+    if (g == null) return false;
+    final secret = (g['group_secret'] as Uint8List).toList();
+    final id = engine!.messageId();
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final ok = await engine!.sendGroupMessage(groupId, secret, {
+      'kind': 'text',
+      'id': id,
+      'ts': ts,
+      'text': text,
+      'gid': groupId,
+    });
+    await store.insertMessage(ChatMessage(
+      id: id,
+      chatId: groupId,
+      senderId: identity!.id,
+      kind: LanternMsgKind.text,
+      text: text,
+      ts: ts,
+      outgoing: true,
+      delivered: true,
+    ));
+    await refreshChats();
+    return ok;
+  }
+
+  /// Leave a group.
+  Future<void> leaveGroup(String groupId) async {
+    if (engine != null) {
+      await engine!.leaveGroup(groupId);
+    }
+    await store.db.delete('messages',
+        where: 'chat_id = ?', whereArgs: [groupId]);
+    await refreshChats();
   }
 
   Future<void> dismissTrust() async {
