@@ -17,6 +17,7 @@ class LanPeer {
   final String id;
   final String name;
   final String handle; // cryptographic short handle
+  final String accountId; // account UUID (shared across devices)
   final String status;
   final String host;
   final int port;
@@ -28,6 +29,7 @@ class LanPeer {
     required this.id,
     required this.name,
     required this.handle,
+    this.accountId = '',
     required this.status,
     required this.host,
     required this.port,
@@ -65,6 +67,7 @@ String _txtString(Uint8List? b) =>
 class LanEngine {
   final DeviceIdentity me;
   final ChatStore store;
+  AccountIdentity? account;
   String displayName;
   String status;
 
@@ -111,6 +114,9 @@ class LanEngine {
         LanternProtocol.txtPort: _txtBytes('$port'),
         LanternProtocol.txtPub: _txtBytes(await me.publicKeyB64),
         LanternProtocol.txtHandle: _txtBytes(await me.handle),
+        if (account != null) ...{
+          LanternProtocol.txtAccountId: _txtBytes(account!.id),
+        },
         LanternProtocol.txtVer: _txtBytes('${LanternProtocol.protoVersion}'),
       };
 
@@ -254,6 +260,7 @@ class LanEngine {
             ? 'Lantern user'
             : _txtString(txt[LanternProtocol.txtName]),
         handle: _txtString(txt[LanternProtocol.txtHandle]),
+        accountId: _txtString(txt[LanternProtocol.txtAccountId]),
         status: _txtString(txt[LanternProtocol.txtStatus]),
         host: host,
         port: port,
@@ -276,6 +283,7 @@ class LanEngine {
             id: id,
             name: peer.name,
             handle: peer.handle,
+            accountId: peer.accountId,
             status: peer.status,
             pubB64: peer.pubB64,
             fingerprint: fp,
@@ -288,6 +296,7 @@ class LanEngine {
             id: id,
             name: peer.name,
             handle: peer.handle,
+            accountId: peer.accountId,
             status: peer.status,
             pubB64: peer.pubB64,
             fingerprint: fp,
@@ -301,6 +310,7 @@ class LanEngine {
             id: known.id,
             name: peer.name,
             handle: peer.handle.isNotEmpty ? peer.handle : known.handle,
+            accountId: peer.accountId.isNotEmpty ? peer.accountId : known.accountId,
             status: peer.status,
             pubB64: known.pubB64,
             fingerprint: known.fingerprint,
@@ -389,6 +399,10 @@ class LanEngine {
         'id': me.id,
         'nm': displayName,
         'pk': await me.publicKeyB64,
+        if (account != null) ...{
+          'ah': await account!.handle,
+          'aid': account!.id,
+        },
         'v': LanternProtocol.protoVersion,
       }));
       return sock;
@@ -422,6 +436,8 @@ class LanEngine {
     if (t == 'hello') {
       final id = json['id'] as String? ?? '';
       final pk = json['pk'] as String? ?? '';
+      final peerHandle = json['ah'] as String? ?? '';
+      final peerAccountId = json['aid'] as String? ?? '';
       if (id.isEmpty || pk.isEmpty || id == me.id) return;
       // Track inbound socket by peer id so sendTo can reuse it.
       // This prevents duplicate dials and the hello echo loop.
@@ -444,6 +460,10 @@ class LanEngine {
             'id': me.id,
             'nm': displayName,
             'pk': await me.publicKeyB64,
+            if (account != null) ...{
+              'ah': await account!.handle,
+              'aid': account!.id,
+            },
             'v': LanternProtocol.protoVersion,
           }));
         } catch (_) {}

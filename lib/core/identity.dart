@@ -57,7 +57,14 @@ class DeviceIdentity {
     return '#${chars.sublist(0, 4).join()}-${chars.sublist(4).join()}';
   }
 
-  Future<String> get handle async => deriveHandle(publicKey);
+  Future<String> get handle async {
+    // Delegate to account handle if available (all devices share same handle)
+    if (AccountIdentity._instance != null) {
+      return AccountIdentity._instance!.handle;
+    }
+    // Fallback: derive from device key (pre-account setup)
+    return deriveHandle(publicKey);
+  }
 
   /// Short fingerprint shown on first-connect sheet, e.g. "a3f9 11c0 …".
   static Future<String> fingerprint(List<int> rawPub) async {
@@ -98,6 +105,66 @@ class DeviceIdentity {
     );
     return derived.extractBytes();
   }
+}
+
+/// Account identity: Ed25519 signing keypair + handle.
+/// One account per person, can have multiple devices.
+/// The handle is derived from the account's public key (not device key),
+/// so all devices under the same account share the same handle.
+class AccountIdentity {
+  final String id;
+  final SimpleKeyPair signKP;
+  final SimplePublicKey signPub;
+
+  AccountIdentity._(this.id, this.signKP, this.signPub);
+
+  static AccountIdentity? _instance;
+  static AccountIdentity get instance => _instance!;
+
+  static Future<AccountIdentity> loadOrCreate({
+    required Future<Map<String, String>?> Function(String key) readKv,
+    required Future<void> Function(String key, String value) writeKv,
+  }) async {
+    if (_instance != null) return _instance!;
+    final ed25519 = Ed25519();
+    final storedId = await readKv('account_id');
+    final storedPriv = await readKv('account_sign_priv');
+    if (storedId != null && storedPriv != null) {
+      final seed = base64Decode(storedPriv);
+      final kp = await ed25519.newKeyPairFromSeed(seed);
+      final pub = await kp.extractPublicKey();
+      _instance = AccountIdentity._(storedId, kp, pub);
+      return _instance!;
+    }
+    final kp = await ed25519.newKeyPair();
+    final pub = await kp.extractPublicKey();
+    final seed = await kp.extractSeed();
+    final fresh = AccountIdentity._(const Uuid().v4(), kp, pub);
+    await writeKv('account_id', fresh.id);
+    await writeKv('account_sign_priv', base64Encode(seed));
+    _instance = fresh;
+    return fresh;
+  }
+
+  Future<String> get publicKeyB64 async => base64Encode(signPub.bytes);
+
+  /// Cryptographic short handle from account public key.
+  static Future<String> deriveHandle(SimplePublicKey pub) async {
+    final h = await Sha256().hash(pub.bytes);
+    final b = h.bytes;
+    const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    final bits =
+        (b[0] << 32) | (b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4];
+    var val = bits;
+    final chars = List<String>.filled(8, '0');
+    for (var i = 7; i >= 0; i--) {
+      chars[i] = alphabet[val & 0x1F];
+      val >>= 5;
+    }
+    return '#${chars.sublist(0, 4).join()}-${chars.sublist(4).join()}';
+  }
+
+  Future<String> get handle => deriveHandle(signPub);
 }
 
 /// AES-256-GCM payload box. Nonce = 12 random bytes prepended to ciphertext.

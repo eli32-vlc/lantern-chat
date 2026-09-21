@@ -17,6 +17,7 @@ import 'store.dart';
 class AppState extends ChangeNotifier {
   final ChatStore store = ChatStore();
   DeviceIdentity? identity;
+  AccountIdentity? account;
   LanEngine? engine;
   String displayName = '';
   String status = 'Available';
@@ -50,6 +51,11 @@ class AppState extends ChangeNotifier {
         await store.setKv('device_id', m['id']!);
         await store.setKv('device_priv', m['priv']!);
       },
+    );
+    // Load or create account identity (Ed25519 signing key + handle)
+    account = await AccountIdentity.loadOrCreate(
+      readKv: (k) => store.getKv(k),
+      writeKv: (k, v) => store.setKv(k, v),
     );
     if (onboarded && displayName.isNotEmpty) {
       await startEngine();

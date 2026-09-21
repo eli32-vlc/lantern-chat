@@ -92,6 +92,7 @@ class KnownPeer {
   final String id;
   final String name;
   final String handle; // cryptographic short handle
+  final String accountId; // account UUID (shared across devices)
   final String status;
   final String pubB64;
   final String fingerprint;
@@ -102,6 +103,7 @@ class KnownPeer {
     required this.id,
     required this.name,
     this.handle = '',
+    this.accountId = '',
     required this.status,
     required this.pubB64,
     required this.fingerprint,
@@ -113,6 +115,7 @@ class KnownPeer {
         'id': id,
         'name': name,
         'handle': handle,
+        'account_id': accountId,
         'status': status,
         'pub': pubB64,
         'fingerprint': fingerprint,
@@ -129,11 +132,12 @@ class ChatStore {
     final path = p.join(dir, 'lantern.db');
     _db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE peers(
             id TEXT PRIMARY KEY, name TEXT NOT NULL, handle TEXT NOT NULL DEFAULT '',
+            account_id TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT '',
             pub TEXT NOT NULL, fingerprint TEXT NOT NULL,
             trusted INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0
@@ -154,6 +158,10 @@ class ChatStore {
         if (oldV < 2) {
           await db.execute(
               "ALTER TABLE peers ADD COLUMN handle TEXT NOT NULL DEFAULT ''");
+        }
+        if (oldV < 3) {
+          await db.execute(
+              "ALTER TABLE peers ADD COLUMN account_id TEXT NOT NULL DEFAULT ''");
         }
       },
     );
@@ -176,6 +184,7 @@ class ChatStore {
       id: r['id'] as String,
       name: r['name'] as String,
       handle: (r['handle'] as String?) ?? '',
+      accountId: (r['account_id'] as String?) ?? '',
       status: (r['status'] as String?) ?? '',
       pubB64: r['pub'] as String,
       fingerprint: r['fingerprint'] as String,
@@ -191,6 +200,7 @@ class ChatStore {
               id: r['id'] as String,
               name: r['name'] as String,
               handle: (r['handle'] as String?) ?? '',
+              accountId: (r['account_id'] as String?) ?? '',
               status: (r['status'] as String?) ?? '',
               pubB64: r['pub'] as String,
               fingerprint: r['fingerprint'] as String,
