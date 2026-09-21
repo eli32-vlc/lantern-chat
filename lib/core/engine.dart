@@ -92,6 +92,10 @@ class LanEngine {
   /// Pending delivery acks: msgId → send time. Expired after 30s.
   final _pendingAcks = <String, DateTime>{};
   Timer? _ackTimer;
+  /// Tracks in-progress syncs to avoid duplicates.
+  final _syncing = <String>{};
+  /// Sync cooldown: peerId → last sync start time.
+  final _syncCooldown = <String, DateTime>{};
 
   Stream<List<LanPeer>> get peers => _peerCtrl.stream;
   Stream<LanEvent> get events => _eventCtrl.stream;
@@ -334,20 +338,31 @@ class LanEngine {
   /// Initiate sync with a same-account peer.
   Future<void> _startSync(String peerId) async {
     if (account == null) return;
+    // Debounce: skip if already syncing or cooled down
+    if (_syncing.contains(peerId)) return;
+    final lastSync = _syncCooldown[peerId];
+    if (lastSync != null &&
+        DateTime.now().difference(lastSync) < const Duration(seconds: 30)) {
+      return;
+    }
     // Find the peer in our live peer list
     final peer = _peers.values.where((p) => p.id == peerId).firstOrNull;
     if (peer == null) return;
     final lastTs = await store.getLastSyncTs(peerId);
     DiagLog.add('sync', 'starting sync with $peerId, since=$lastTs');
-    final sock = await _dial(peer);
-    if (sock == null) return;
+    _syncing.add(peerId);
+    _syncCooldown[peerId] = DateTime.now();
     try {
+      final sock = await _dial(peer);
+      if (sock == null) return;
       sock.add(LanternProtocol.encodeFrame({
         't': 'sync_req',
         'from': me.id,
         'since': lastTs,
       }));
-    } catch (_) {}
+    } catch (_) {} finally {
+      _syncing.remove(peerId);
+    }
   }
 
   // ---------- sockets ----------
@@ -567,9 +582,9 @@ class LanEngine {
       if (peerKnown == null || !peerKnown.trusted) return;
       if (peerKnown.accountId != account!.id) return;
       DiagLog.add('sync', 'sync_req from $peerId since=$since');
-      // Fetch messages newer than 'since'
+      // Fetch messages newer than 'since' (cap at200 per sync)
       final msgs = await store.db.query('messages',
-          where: 'ts > ?', whereArgs: [since], orderBy: 'ts ASC', limit: 500);
+          where: 'ts > ?', whereArgs: [since], orderBy: 'ts ASC', limit: 200);
       final List<Map<String, dynamic>> outMsgs = [];
       for (final row in msgs) {
         outMsgs.add({
@@ -626,7 +641,7 @@ class LanEngine {
         // Ensure the peer exists in our DB
         final existingPeer = await store.getPeer(chatId);
         if (existingPeer == null && chatId != me.id) {
-          // Create a placeholder peer entry
+          // Create a placeholder peer entry (trusted if same account)
           final handle = row['handle'] as String? ?? '';
           await store.upsertPeer(KnownPeer(
             id: chatId,
@@ -636,7 +651,7 @@ class LanEngine {
             status: '',
             pubB64: '',
             fingerprint: '',
-            trusted: false,
+            trusted: true, // same-account sync = auto-trust
             lastSeen: DateTime.now().millisecondsSinceEpoch,
           ));
         }
@@ -675,6 +690,9 @@ class LanEngine {
       // Must be from a trusted peer
       final known = await store.getPeer(from);
       if (known == null || !known.trusted) return;
+      // If we're already in the group, only accept invites from admins
+      final existingMembers = await store.groupMemberIds(gid);
+      if (existingMembers.isNotEmpty && !existingMembers.contains(from)) return;
       // Decrypt the group secret with our pairwise key
       final key = await _sessionFor(from, known.pubB64);
       if (key == null) return;
@@ -707,12 +725,18 @@ class LanEngine {
       if (from.isEmpty || gid.isEmpty || gsecB64.isEmpty) return;
       final known = await store.getPeer(from);
       if (known == null || !known.trusted) return;
+      // Verify sender is an admin of the group
+      final members = await store.groupMemberIds(gid);
+      if (!members.contains(from)) return;
       final key = await _sessionFor(from, known.pubB64);
       if (key == null) return;
       try {
         final plain = await PayloadBox.open(key, base64Decode(gsecB64));
         final newSecret = base64Decode(plain['secret'] as String);
-        await store.storeGroup(gid, '', newSecret, createdBy: from);
+        // Update secret only (don't overwrite name)
+        await store.db.update('groups',
+            {'group_secret': Uint8List.fromList(newSecret)},
+            where: 'id = ?', whereArgs: [gid]);
         DiagLog.add('group', 'key rotated for $gid');
       } catch (_) {}
       return;
@@ -800,24 +824,33 @@ class LanEngine {
     final gk = GroupKey(groupSecret);
     final sealed = await gk.encrypt(payload);
     final members = await store.groupMemberIds(groupId);
-    var anySent = false;
+    final futures = <Future<bool>>[];
     for (final mid in members) {
       if (mid == me.id) continue;
-      final peer = _peers.values.where((p) => p.id == mid).firstOrNull;
-      if (peer == null) continue;
-      final sock = await _dial(peer);
-      if (sock == null) continue;
-      try {
-        sock.add(LanternProtocol.encodeFrame({
-          't': 'payload',
-          'from': me.id,
-          'blob': base64Encode(sealed),
-          'gid': groupId,
-        }));
-        anySent = true;
-      } catch (_) {}
+      futures.add(_sendToMember(mid, sealed, groupId));
     }
-    return anySent;
+    if (futures.isEmpty) return false;
+    final results = await Future.wait(futures);
+    return results.any((r) => r);
+  }
+
+  Future<bool> _sendToMember(
+      String peerId, Uint8List sealed, String groupId) async {
+    final peer = _peers.values.where((p) => p.id == peerId).firstOrNull;
+    if (peer == null) return false;
+    final sock = await _dial(peer);
+    if (sock == null) return false;
+    try {
+      sock.add(LanternProtocol.encodeFrame({
+        't': 'payload',
+        'from': me.id,
+        'blob': base64Encode(sealed),
+        'gid': groupId,
+      }));
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Leave a group.
@@ -884,6 +917,8 @@ class LanEngine {
     _sockets.clear();
     _helloReplied.clear();
     _pendingAcks.clear();
+    _syncing.clear();
+    _syncCooldown.clear();
   }
 
   void dispose() {

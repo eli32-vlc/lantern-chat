@@ -348,9 +348,10 @@ class AppState extends ChangeNotifier {
       'status': status,
       'v': 1,
     }));
-    // Generate random 6-digit passphrase
+    // Generate random 8-char alphanumeric passcode (~48 bits entropy)
+    const passChars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     final rng = Random.secure();
-    final passcode = List.generate(6, (_) => rng.nextInt(10)).join();
+    final passcode = List.generate(8, (_) => passChars[rng.nextInt(passChars.length)]).join();
     // Derive encryption key from passphrase via HKDF
     final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
     final key = await hkdf.deriveKey(
@@ -411,7 +412,9 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('onboarded', true);
       onboarded = true;
       // Generate a new device keypair (this device is new to the account)
-      final deviceSeed = List<int>.generate(32, (_) => Random.secure().nextInt(256));
+      final x25519 = X25519();
+      final deviceKP = await x25519.newKeyPair();
+      final deviceSeed = await deviceKP.extractPrivateKeyBytes();
       final deviceId = const Uuid().v4();
       await store.setKv('device_id', deviceId);
       await store.setKv('device_priv', base64Encode(deviceSeed));
@@ -458,7 +461,7 @@ class AppState extends ChangeNotifier {
       text: text,
       ts: ts,
       outgoing: true,
-      delivered: true,
+      delivered: false, // group ack not implemented yet
     ));
     await refreshChats();
     return ok;

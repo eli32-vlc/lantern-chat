@@ -146,8 +146,8 @@ class _QrImportScreenState extends State<QrImportScreen> {
 
   Future<void> _import() async {
     final passcode = _passCtrl.text.trim();
-    if (passcode.length != 6) {
-      setState(() => _error = 'Enter the 6-digit passcode.');
+    if (passcode.length != 8) {
+      setState(() => _error = 'Enter the 8-character passcode.');
       return;
     }
     setState(() { _importing = true; _error = null; });
@@ -202,13 +202,13 @@ class _QrImportScreenState extends State<QrImportScreen> {
           const SizedBox(height: 12),
           L.txt('QR code scanned', size: L.title, weight: FontWeight.w600),
           const SizedBox(height: 8),
-          LMute('Enter the 6-digit passcode shown on your other device.',
+          LMute('Enter the 8-character passcode shown on your other device.',
               align: TextAlign.center),
           const SizedBox(height: 24),
           TextField(
             controller: _passCtrl,
             keyboardType: TextInputType.number,
-            maxLength: 6,
+            maxLength: 8,
             textAlign: TextAlign.center,
             style: const TextStyle(
                 fontSize: 28, letterSpacing: 12, fontFamily: 'monospace'),

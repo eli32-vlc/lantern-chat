@@ -359,19 +359,13 @@ class ChatStore {
       final label = id.startsWith('compat:') ? id.substring(7) : id;
       await addSummary(id, 'Plaintext $label');
     }
-    // Group chats: include any that have messages
-    final groupRows = await db.rawQuery(
-        'SELECT DISTINCT chat_id FROM messages WHERE chat_id LIKE ?',
-        ['grp-%']);
-    for (final r in groupRows) {
-      final gid = r['chat_id'] as String;
+    // Group chats: include any that exist in our DB
+    final allGroups = await db.query('groups');
+    for (final g in allGroups) {
+      final gid = g['id'] as String;
       if (seen.contains(gid)) continue;
-      final g = await getGroup(gid);
-      final gname = g != null ? g['name'] as String : 'Group';
-      // Only add if the group exists in our DB (we're a member)
-      if (g != null) {
-        await addSummary(gid, '\u{1F465} $gname');
-      }
+      final gname = g['name'] as String;
+      await addSummary(gid, '\u{1F465} $gname');
     }
     out.sort((a, b) => (b.lastTs ?? 0).compareTo(a.lastTs ?? 0));
     return out;

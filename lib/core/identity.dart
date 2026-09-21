@@ -236,6 +236,9 @@ class PayloadBox {
 
   static Future<Map<String, dynamic>> open(
       List<int> key, List<int> packed) async {
+    if (packed.length < 28) {
+      throw ArgumentError('ciphertext too short: ${packed.length} bytes');
+    }
     final secretKey = SecretKey(key);
     final nonce = packed.sublist(0, 12);
     final macBytes = packed.sublist(packed.length - 16);

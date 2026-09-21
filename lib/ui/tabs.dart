@@ -419,12 +419,10 @@ class _TrustSheetState extends State<TrustSheet> {
       final combined = [...sorted[0], ...sorted[1]];
       final h = await Sha256().hash(combined);
       final hex = h.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-      // Format as groups of 5 digits
-      final numStr = BigInt.parse(hex, radix: 16).toString();
-      final padded = numStr.padLeft(60, '0');
+      // Format as groups of 5 hex chars
       final groups = <String>[];
-      for (var i = 0; i < 60; i += 5) {
-        groups.add(padded.substring(i, i + 5));
+      for (var i = 0; i < hex.length && groups.length < 12; i += 5) {
+        groups.add(hex.substring(i, (i + 5).clamp(0, hex.length)));
       }
       if (mounted) setState(() { _fp = fp; _safetyNum = groups.join(' '); });
     } catch (e) {

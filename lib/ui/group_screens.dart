@@ -146,6 +146,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
   Timer? _poll;
   bool _sending = false;
   List<String> _memberIds = [];
+  final _senderNames = <String, String>{}; // cache sender names
 
   @override
   void initState() {
@@ -159,6 +160,24 @@ class _GroupChatPageState extends State<GroupChatPage> {
   Future<void> _loadMembers() async {
     final ids = await widget.state.store.groupMemberIds(widget.groupId);
     if (mounted) setState(() => _memberIds = ids);
+  }
+
+  Future<String?> _resolveName(String senderId) async {
+    if (_senderNames.containsKey(senderId)) return _senderNames[senderId];
+    // Check live peers
+    for (final p in widget.state.peers) {
+      if (p.id == senderId) {
+        _senderNames[senderId] = p.name;
+        return p.name;
+      }
+    }
+    // Fallback: query store
+    final known = await widget.state.store.getPeer(senderId);
+    final name = known?.name;
+    if (name != null && name.isNotEmpty) {
+      _senderNames[senderId] = name;
+    }
+    return name;
   }
 
   @override
@@ -332,8 +351,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final bg = isMe
         ? Theme.of(context).colorScheme.primaryContainer
         : Theme.of(context).colorScheme.surfaceContainerHighest;
-    // Look up sender name for incoming group messages
-    final senderName = isMe ? null : _senderName(m.senderId);
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -349,11 +366,18 @@ class _GroupChatPageState extends State<GroupChatPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (!isMe && senderName != null)
-              L.txt(senderName,
-                  size: L.tiny,
-                  weight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.primary),
+            if (!isMe && m.senderId != widget.state.identity?.id)
+              FutureBuilder<String?>(
+                future: _resolveName(m.senderId),
+                builder: (context, snap) {
+                  final name = snap.data;
+                  if (name == null) return const SizedBox.shrink();
+                  return L.txt(name,
+                      size: L.tiny,
+                      weight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.primary);
+                },
+              ),
             SelectableText(m.text ?? '',
                 style: TextStyle(
                     fontSize: L.body,
@@ -365,17 +389,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
         ),
       ),
     );
-  }
-
-  String? _senderName(String senderId) {
-    // Check if it's us
-    if (senderId == widget.state.identity?.id) return null;
-    // Look up in peers
-    for (final p in widget.state.peers) {
-      if (p.id == senderId) return p.name;
-    }
-    // Look up in store
-    return null; // Will be resolved from store async if needed
   }
 
   String _time(int ts) {

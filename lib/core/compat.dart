@@ -115,9 +115,6 @@ class _PrefixSocket extends Stream<Uint8List> implements Socket {
       {Function? onError, void Function()? onDone, bool? cancelOnError}) {
     if (!_wired) {
       _wired = true;
-      // Add prefix SYNCHRONOUSLY before subscribing to the inner socket.
-      // The non-broadcast controller buffers events until the listener
-      // (attached below) subscribes, guaranteeing prefix-first ordering.
       if (_prefix.isNotEmpty) {
         _ctrl.add(Uint8List.fromList(_prefix));
       }
@@ -130,6 +127,53 @@ class _PrefixSocket extends Stream<Uint8List> implements Socket {
     return _ctrl.stream.listen(onData,
         onError: onError, onDone: onDone, cancelOnError: cancelOnError);
   }
+
+  // Explicitly delegate Socket methods to _inner (noSuchMethod is unreliable)
+  @override
+  void add(List<int> data) => _inner.add(data);
+
+  @override
+  void write(Object? object) => _inner.write(object);
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) =>
+      _inner.addError(error, stackTrace);
+
+  @override
+  Future<void> addStream(Stream<List<int>> stream) => _inner.addStream(stream);
+
+  @override
+  Future<void> flush() => _inner.flush();
+
+  @override
+  Future<void> close() => _inner.close();
+
+  @override
+  void destroy() => _inner.destroy();
+
+  @override
+  InternetAddress get remoteAddress => _inner.remoteAddress;
+
+  @override
+  int get remotePort => _inner.remotePort;
+
+  @override
+  InternetAddress get address => _inner.address;
+
+  @override
+  int get port => _inner.port;
+
+  @override
+  Future get done => _inner.done;
+
+  @override
+  set done(Future future) { _inner.done = future; }
+
+  @override
+  Encoding get encoding => _inner.encoding;
+
+  @override
+  set encoding(Encoding value) { _inner.encoding = value; }
 
   @override
   dynamic noSuchMethod(Invocation i) => (_inner as dynamic).noSuchMethod(i);
