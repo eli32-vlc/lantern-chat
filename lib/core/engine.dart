@@ -319,9 +319,34 @@ class LanEngine {
           ));
         }
       }
+      // Trigger sync with same-account peers
+      if (peer.accountId.isNotEmpty &&
+          account != null &&
+          peer.accountId == account!.id) {
+        _startSync(id);
+      }
     } catch (_) {
       // ignore malformed services
     }
+  }
+
+  /// Initiate sync with a same-account peer.
+  Future<void> _startSync(String peerId) async {
+    if (account == null) return;
+    // Find the peer in our live peer list
+    final peer = _peers.values.where((p) => p.id == peerId).firstOrNull;
+    if (peer == null) return;
+    final lastTs = await store.getLastSyncTs(peerId);
+    DiagLog.add('sync', 'starting sync with $peerId, since=$lastTs');
+    final sock = await _dial(peer);
+    if (sock == null) return;
+    try {
+      sock.add(LanternProtocol.encodeFrame({
+        't': 'sync_req',
+        'from': me.id,
+        'since': lastTs,
+      }));
+    } catch (_) {}
   }
 
   // ---------- sockets ----------
@@ -528,6 +553,115 @@ class LanEngine {
       await store.db.update('messages', {'delivered': 1},
           where: 'id = ?', whereArgs: [msgId]);
       DiagLog.add('proto', 'ack received for $msgId');
+      return;
+    }
+    // ---- Sync: same-account devices exchange message history ----
+    if (t == 'sync_req') {
+      final peerId = json['from'] as String? ?? dialPeerId ?? '';
+      final since = json['since'] as int? ?? 0;
+      if (peerId.isEmpty) return;
+      // Only sync with same-account peers that are trusted
+      if (account == null) return;
+      final peerKnown = await store.getPeer(peerId);
+      if (peerKnown == null || !peerKnown.trusted) return;
+      if (peerKnown.accountId != account!.id) return;
+      DiagLog.add('sync', 'sync_req from $peerId since=$since');
+      // Fetch messages newer than 'since'
+      final msgs = await store.db.query('messages',
+          where: 'ts > ?', whereArgs: [since], orderBy: 'ts ASC', limit: 500);
+      final List<Map<String, dynamic>> outMsgs = [];
+      for (final row in msgs) {
+        outMsgs.add({
+          'id': row['id'] as String,
+          'chat_id': row['chat_id'] as String,
+          'sender_id': row['sender_id'] as String,
+          'kind': row['kind'] as String,
+          'text': row['text'] as String?,
+          'file_name': row['file_name'] as String?,
+          'file_bytes': row['file_bytes'] as int?,
+          'duration_ms': row['duration_ms'] as int?,
+          'ts': row['ts'] as int,
+          'outgoing': row['outgoing'] as int,
+        });
+      }
+      final cursor = outMsgs.isNotEmpty
+          ? (outMsgs.last['ts'] as int)
+          : since;
+      try {
+        sock.add(LanternProtocol.encodeFrame({
+          't': 'sync_msgs',
+          'from': me.id,
+          'messages': outMsgs,
+          'cursor': cursor,
+        }));
+      } catch (_) {}
+      DiagLog.add('sync', 'sent ${outMsgs.length} msgs, cursor=$cursor');
+      return;
+    }
+    if (t == 'sync_msgs') {
+      final peerId = json['from'] as String? ?? dialPeerId ?? '';
+      final messages = json['messages'] as List<dynamic>? ?? [];
+      final cursor = json['cursor'] as int? ?? 0;
+      if (peerId.isEmpty) return;
+      // Only accept sync from same-account peers
+      if (account == null) return;
+      final peerKnown = await store.getPeer(peerId);
+      if (peerKnown == null || !peerKnown.trusted) return;
+      if (peerKnown.accountId != account!.id) return;
+      DiagLog.add('sync',
+          'sync_msgs from $peerId: ${messages.length} msgs, cursor=$cursor');
+      int stored = 0;
+      for (final m in messages) {
+        final row = m as Map<String, dynamic>;
+        final msgId = row['id'] as String;
+        final origChatId = row['chat_id'] as String;
+        final senderId = row['sender_id'] as String;
+        final isFromMe = senderId == peerId;
+        // Resolve the chat ID on this device:
+        // - If message is from the sync peer (peerId), use origChatId
+        //   (the peer we're syncing from was the sender)
+        // - Otherwise it's a message I sent to someone else; use origChatId
+        final chatId = origChatId;
+        // Ensure the peer exists in our DB
+        final existingPeer = await store.getPeer(chatId);
+        if (existingPeer == null && chatId != me.id) {
+          // Create a placeholder peer entry
+          final handle = row['handle'] as String? ?? '';
+          await store.upsertPeer(KnownPeer(
+            id: chatId,
+            name: row['peer_name'] as String? ?? 'Unknown',
+            handle: handle,
+            accountId: '',
+            status: '',
+            pubB64: '',
+            fingerprint: '',
+            trusted: false,
+            lastSeen: DateTime.now().millisecondsSinceEpoch,
+          ));
+        }
+        // Determine if this message is outgoing on this device
+        final outgoing = isFromMe ? 0 : (senderId == me.id ? 1 : 0);
+        await store.insertMessage(ChatMessage(
+          id: msgId,
+          chatId: chatId,
+          senderId: senderId,
+          kind: LanternMsgKindX.fromWire(row['kind'] as String?),
+          text: row['text'] as String?,
+          fileName: row['file_name'] as String?,
+          fileBytes: row['file_bytes'] as int?,
+          durationMs: row['duration_ms'] as int?,
+          ts: row['ts'] as int,
+          outgoing: outgoing == 1,
+          delivered: true,
+        ));
+        stored++;
+      }
+      // Update sync cursor
+      if (cursor > 0) {
+        await store.setLastSyncTs(peerId, cursor);
+      }
+      DiagLog.add('sync', 'stored $stored msgs from $peerId');
+      if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
       return;
     }
   }

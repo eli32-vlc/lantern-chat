@@ -132,7 +132,7 @@ class ChatStore {
     final path = p.join(dir, 'lantern.db');
     _db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE peers(
@@ -153,6 +153,11 @@ class ChatStore {
             'CREATE INDEX idx_msg_chat_ts ON messages(chat_id, ts)');
         await db.execute('''
           CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT NOT NULL)''');
+        await db.execute('''
+          CREATE TABLE sync_state(
+            peer_id TEXT PRIMARY KEY,
+            last_sync_ts INTEGER NOT NULL DEFAULT 0
+          )''');
       },
       onUpgrade: (db, oldV, newV) async {
         if (oldV < 2) {
@@ -162,6 +167,13 @@ class ChatStore {
         if (oldV < 3) {
           await db.execute(
               "ALTER TABLE peers ADD COLUMN account_id TEXT NOT NULL DEFAULT ''");
+        }
+        if (oldV < 4) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS sync_state(
+              peer_id TEXT PRIMARY KEY,
+              last_sync_ts INTEGER NOT NULL DEFAULT 0
+            )''');
         }
       },
     );
@@ -324,6 +336,20 @@ class ChatStore {
 
   Future<void> deleteChat(String chatId) async {
     await db.delete('messages', where: 'chat_id = ?', whereArgs: [chatId]);
+  }
+
+  // ---- sync state ----
+  Future<int> getLastSyncTs(String peerId) async {
+    final rows = await db.query('sync_state',
+        where: 'peer_id = ?', whereArgs: [peerId]);
+    if (rows.isEmpty) return 0;
+    return (rows.first['last_sync_ts'] as int?) ?? 0;
+  }
+
+  Future<void> setLastSyncTs(String peerId, int ts) async {
+    await db.insert('sync_state',
+        {'peer_id': peerId, 'last_sync_ts': ts},
+        conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   // ---- kv ----
