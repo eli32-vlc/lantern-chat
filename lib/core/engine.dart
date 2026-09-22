@@ -983,7 +983,6 @@ class LanEngine {
       final transferId = json['tid'] as String? ?? '';
       final fileName = json['name'] as String? ?? 'file';
       final fileSize = json['size'] as int? ?? 0;
-      final fileKind = json['kind'] as String? ?? 'file';
       if (from.isEmpty || transferId.isEmpty) return;
       DiagLog.add('file',
           'offer from $from: $fileName ($fileSize bytes) tid=$transferId');
