@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../core/content.dart';
@@ -75,7 +76,7 @@ class _WebPreviewScreenState extends State<WebPreviewScreen> {
     // Read HTML and resolve relative resource URLs
     final html = file.readAsStringSync();
     final resolved = _resolveRelativeUrls(html, widget.hash);
-    _controller.loadHtmlString(resolved, baseUrl: Uri.parse('file://${file.parent.path}/'));
+    _controller.loadHtmlString(resolved);
     setState(() {
       _url = '${widget.hash.substring(0, 12)}.web';
       _loading = false;
@@ -156,7 +157,6 @@ class WebBrowserScreen extends StatefulWidget {
 }
 
 class _WebBrowserScreenState extends State<WebBrowserScreen> {
-  final _urlCtrl = TextEditingController();
   List<Map<String, dynamic>> _sites = [];
   bool _loading = true;
 

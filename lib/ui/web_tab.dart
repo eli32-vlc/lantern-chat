@@ -58,7 +58,7 @@ class _WebTabState extends State<WebTab> {
   }
 
   Future<void> _publish() async {
-    final result = await FilePicker.pickFiles(allowMultiple: false);
+    final result = await FilePicker.pickFiles();
     if (result.isEmpty || result.single.path == null) return;
     final path = result.single.path!;
     try {
