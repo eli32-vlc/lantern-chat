@@ -11,6 +11,7 @@ import '../core/permissions.dart';
 import '../core/store.dart';
 import 'group_screens.dart';
 import 'interop_chat.dart';
+import 'ptt.dart';
 import 'theme.dart';
 
 class ChatsTab extends StatelessWidget {
@@ -56,7 +57,9 @@ class ChatsTab extends StatelessWidget {
         }
         return RefreshIndicator(
           onRefresh: state.refreshChats,
-          child: ListView.separated(
+          child: Stack(
+            children: [
+              ListView.separated(
             itemCount: state.chats.length,
             separatorBuilder: (context, _) =>
                 const Divider(height: 1, indent: 72),
@@ -143,6 +146,20 @@ class ChatsTab extends StatelessWidget {
                 ),
               );
             },
+          ),
+              Positioned(
+                right: 16,
+                bottom: 80,
+                child: FloatingActionButton.small(
+                  heroTag: 'search_fab',
+                  onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                          builder: (_) =>
+                              MessageSearchScreen(state: state))),
+                  child: const Icon(Icons.search),
+                ),
+              ),
+            ],
           ),
         );
       },

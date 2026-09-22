@@ -132,7 +132,7 @@ class ChatStore {
     final path = p.join(dir, 'lantern.db');
     _db = await openDatabase(
       path,
-      version: 5,
+      version: 6,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE peers(
@@ -174,6 +174,14 @@ class ChatStore {
             joined_at INTEGER NOT NULL,
             PRIMARY KEY (group_id, peer_id)
           )''');
+        await db.execute('''
+          CREATE TABLE msg_queue(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            peer_id TEXT NOT NULL,
+            frame BLOB NOT NULL,
+            created_at INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0
+          )''');
       },
       onUpgrade: (db, oldV, newV) async {
         if (oldV < 2) {
@@ -207,6 +215,16 @@ class ChatStore {
               role TEXT NOT NULL DEFAULT 'member',
               joined_at INTEGER NOT NULL,
               PRIMARY KEY (group_id, peer_id)
+            )''');
+        }
+        if (oldV < 6) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS msg_queue(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              peer_id TEXT NOT NULL,
+              frame BLOB NOT NULL,
+              created_at INTEGER NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 0
             )''');
         }
       },
@@ -442,6 +460,48 @@ class ChatStore {
     final rows = await db.query('groups',
         where: 'id = ?', whereArgs: [groupId]);
     return rows.isNotEmpty;
+  }
+
+  // ---- message queue (store-and-forward) ----
+  Future<void> queueMessage(String peerId, Uint8List frame) async {
+    await db.insert('msg_queue', {
+      'peer_id': peerId,
+      'frame': frame,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+      'attempts': 0,
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> queuedMessages(String peerId) async {
+    return db.query('msg_queue',
+        where: 'peer_id = ?', whereArgs: [peerId], orderBy: 'created_at ASC');
+  }
+
+  Future<void> removeQueuedMessage(int id) async {
+    await db.delete('msg_queue', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> incrementQueueAttempt(int id) async {
+    await db.rawUpdate(
+        'UPDATE msg_queue SET attempts = attempts + 1 WHERE id = ?', [id]);
+  }
+
+  Future<void> purgeOldQueue({int maxAgeMs = 3600000}) async {
+    final cutoff =
+        DateTime.now().subtract(Duration(milliseconds: maxAgeMs)).millisecondsSinceEpoch;
+    await db.delete('msg_queue',
+        where: 'created_at < ?', whereArgs: [cutoff]);
+  }
+
+  // ---- search ----
+  Future<List<ChatMessage>> searchMessages(String query,
+      {int limit = 50}) async {
+    final rows = await db.query('messages',
+        where: 'text LIKE ?',
+        whereArgs: ['%$query%'],
+        orderBy: 'ts DESC',
+        limit: limit);
+    return rows.reversed.map(ChatMessage.fromRow).toList();
   }
 
   // ---- kv ----

@@ -352,6 +352,8 @@ class LanEngine {
           peer.accountId == account!.id) {
         _startSync(id);
       }
+      // Flush queued messages for this peer
+      _flushQueue(id);
     } catch (_) {
       // ignore malformed services
     }
@@ -385,6 +387,79 @@ class LanEngine {
     } catch (_) {} finally {
       _syncing.remove(peerId);
     }
+  }
+
+  /// Flush queued messages for a peer that just came online.
+  Future<void> _flushQueue(String peerId) async {
+    final queued = await store.queuedMessages(peerId);
+    if (queued.isEmpty) return;
+    DiagLog.add('queue', 'flushing ${queued.length} queued msgs for $peerId');
+    final peer = _peers.values.where((p) => p.id == peerId).firstOrNull;
+    if (peer == null) return;
+    for (final row in queued) {
+      final id = row['id'] as int;
+      final frame = row['frame'] as Uint8List;
+      final attempts = row['attempts'] as int;
+      if (attempts >= 5) {
+        await store.removeQueuedMessage(id);
+        continue;
+      }
+      final sock = await _dial(peer);
+      if (sock == null) break;
+      try {
+        sock.add(frame);
+        await sock.flush();
+        await store.removeQueuedMessage(id);
+        DiagLog.add('queue', 'delivered queued msg $id');
+      } catch (_) {
+        await store.incrementQueueAttempt(id);
+        break;
+      }
+    }
+  }
+
+  /// Send typing indicator to a peer.
+  void sendTyping(LanPeer peer) {
+    if (_udpSocket == null || peer.udpPort == 0) return;
+    final packet = _buildUdpData(
+        'typing', Uint8List.fromList([LanternProtocol.udpTypeTyping]));
+    _udpSocket!.send(
+        packet, InternetAddress(peer.host), peer.udpPort);
+  }
+
+  // Typing indicator callback (set by UI)
+  void Function(String peerId)? onTyping;
+
+  // PTT callbacks (set by UI)
+  void Function(String peerId, List<int> audioData)? onPttData;
+  void Function(String peerId)? onPttStart;
+  void Function(String peerId)? onPttStop;
+
+  /// Send PTT voice data to a peer.
+  void sendPttData(LanPeer peer, List<int> audioChunk) {
+    if (_udpSocket == null || peer.udpPort == 0) return;
+    final packet = _buildUdpData(
+        'ptt', Uint8List.fromList([LanternProtocol.udpTypePttData, ...audioChunk]));
+    _udpSocket!.send(
+        packet, InternetAddress(peer.host), peer.udpPort);
+  }
+
+  /// Send PTT start signal.
+  void sendPttStart(LanPeer peer) {
+    if (_udpSocket == null || peer.udpPort == 0) return;
+    final packet = _buildUdpData(
+        'ptt', Uint8List.fromList([LanternProtocol.udpTypePttStart]));
+    _udpSocket!.send(
+        packet, InternetAddress(peer.host), peer.udpPort);
+  }
+
+  /// Send PTT stop signal.
+  void sendPttStop(LanPeer peer) {
+    if (_udpSocket == null || peer.udpPort == 0) return;
+    final packet = _buildUdpData(
+        'ptt', Uint8List.fromList([LanternProtocol.udpTypePttStop]));
+    _udpSocket!.send(
+        packet, InternetAddress(peer.host), peer.udpPort);
   }
 
   // ---------- sockets ----------
@@ -774,6 +849,7 @@ class LanEngine {
   /// Send an encrypted payload to a peer. Requires trusted pin.
   /// Tries UDP first for small payloads (fast, no TCP slow start).
   /// Falls back to TCP for large payloads or if UDP fails.
+  /// Queues message for store-and-forward if peer is offline.
   Future<bool> sendTo(LanPeer peer, Map<String, dynamic> payload) async {
     final known = await store.getPeer(peer.id);
     if (known == null || !known.trusted) return false;
@@ -781,6 +857,11 @@ class LanEngine {
     if (key == null) return false;
     final sealed = await PayloadBox.seal(key, payload);
     final msgId = payload['id'] as String?;
+    final frame = LanternProtocol.encodeFrame({
+      't': 'payload',
+      'from': me.id,
+      'blob': base64Encode(sealed),
+    });
 
     // Try UDP for small payloads if peer has a UDP port
     if (peer.udpPort > 0 &&
@@ -789,11 +870,22 @@ class LanEngine {
         _udpSocket != null) {
       DiagLog.add('udp',
           'send $msgId ${sealed.length}B to ${peer.host}:${peer.udpPort}');
-      return _sendUdp(peer, sealed, msgId);
+      final ok = await _sendUdp(peer, sealed, msgId);
+      if (!ok) {
+        // Queue for store-and-forward
+        await store.queueMessage(peer.id, frame);
+        DiagLog.add('queue', 'queued $msgId for ${peer.id}');
+      }
+      return ok;
     }
 
     // Fall back to TCP
-    return _sendTcp(peer, sealed, msgId);
+    final ok = await _sendTcp(frame, msgId);
+    if (!ok) {
+      await store.queueMessage(peer.id, frame);
+      DiagLog.add('queue', 'queued $msgId for ${peer.id}');
+    }
+    return ok;
   }
 
   /// Send via UDP with application-level ACK/retry.
@@ -835,15 +927,10 @@ class LanEngine {
   }
 
   /// Send via TCP (existing path).
-  Future<bool> _sendTcp(
-      LanPeer peer, Uint8List sealed, String? msgId) async {
-    final frame = LanternProtocol.encodeFrame({
-      't': 'payload',
-      'from': me.id,
-      'blob': base64Encode(sealed),
-    });
-    final sock = await _dial(peer);
-    if (sock == null) return false;
+  Future<bool> _sendTcp(Uint8List frame, String? msgId) async {
+    // Find any connected socket to send on
+    if (_sockets.isEmpty) return false;
+    final sock = _sockets.values.first;
     try {
       sock.add(frame);
       await sock.flush();
@@ -852,7 +939,6 @@ class LanEngine {
       }
       return true;
     } catch (_) {
-      _sockets.remove(peer.id);
       return false;
     }
   }
@@ -920,17 +1006,64 @@ class LanEngine {
       if (data.length < payloadOffset + payloadLen) return;
       final payload = data.sublist(payloadOffset, payloadOffset + payloadLen);
 
-      // Send ACK back immediately
+      // Check for special sub-types (typing, PTT)
+      if (payload.isNotEmpty) {
+        final subType = payload[0];
+        if (subType == LanternProtocol.udpTypeTyping) {
+          // Typing indicator — find sender, notify UI
+          final sender = _findPeerByHost(dg.address.address);
+          if (sender != null && onTyping != null) {
+            onTyping!(sender);
+          }
+          return;
+        }
+        if (subType == LanternProtocol.udpTypePttStart) {
+          final sender = _findPeerByHost(dg.address.address);
+          if (sender != null && onPttStart != null) {
+            onPttStart!(sender);
+          }
+          return;
+        }
+        if (subType == LanternProtocol.udpTypePttData) {
+          final sender = _findPeerByHost(dg.address.address);
+          if (sender != null && onPttData != null && payload.length > 1) {
+            onPttData!(sender, payload.sublist(1));
+          }
+          return;
+        }
+        if (subType == LanternProtocol.udpTypePttStop) {
+          final sender = _findPeerByHost(dg.address.address);
+          if (sender != null && onPttStop != null) {
+            onPttStop!(sender);
+          }
+          return;
+        }
+      }
+
+      // Regular encrypted payload — send ACK and process
       _udpSocket!.send(
           Uint8List.fromList(_buildUdpAck(msgId)),
           dg.address,
           dg.port);
       DiagLog.add('udp',
           'DATA received from ${dg.address.address}, ACK sent');
-
-      // Process the payload
       _processPayload(payload, dg.address.address);
     }
+  }
+
+  /// Find peer ID by IP address.
+  String? _findPeerByHost(String host) {
+    for (final p in _peers.values) {
+      if (p.host == host) return p.id;
+    }
+    for (final entry in _sockets.entries) {
+      try {
+        if (entry.value.remoteAddress.address == host) {
+          return entry.key;
+        }
+      } catch (_) {}
+    }
+    return null;
   }
 
   /// Process an encrypted payload (shared by TCP and UDP paths).

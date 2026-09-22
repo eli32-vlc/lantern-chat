@@ -6,6 +6,7 @@ import 'chat.dart';
 import 'compat_chat.dart';
 import 'group_screens.dart';
 import 'onboarding.dart';
+import 'ptt.dart';
 import 'settings.dart';
 import 'tabs.dart';
 import 'theme.dart';
@@ -85,6 +86,8 @@ class _HomeShellState extends State<HomeShell> {
               BottomNavigationBarItem(
                   icon: Icon(CupertinoIcons.person_2), label: 'Peers'),
               BottomNavigationBarItem(
+                  icon: Icon(CupertinoIcons.mic), label: 'PTT'),
+              BottomNavigationBarItem(
                   icon: Icon(CupertinoIcons.settings), label: 'Settings'),
             ],
           ),
@@ -92,6 +95,7 @@ class _HomeShellState extends State<HomeShell> {
             final title = switch (i) {
               0 => 'Chats',
               1 => 'Peers',
+              2 => 'PTT',
               _ => 'Settings'
             };
             Widget tabBody;
@@ -100,6 +104,8 @@ class _HomeShellState extends State<HomeShell> {
                 tabBody = ChatsTab(state: widget.state, onOpen: _openChat);
               case 1:
                 tabBody = PeersTab(state: widget.state, onOpen: _openChat);
+              case 2:
+                tabBody = PttTab(state: widget.state);
               default:
                 tabBody = SettingsTab(state: widget.state);
             }
@@ -129,11 +135,13 @@ class _HomeShellState extends State<HomeShell> {
     final title = switch (_tab) {
       0 => 'Chats',
       1 => 'Peers',
+      2 => 'PTT',
       _ => 'Settings'
     };
     final body = switch (_tab) {
       0 => ChatsTab(state: widget.state, onOpen: _openChat),
       1 => PeersTab(state: widget.state, onOpen: _openChat),
+      2 => PttTab(state: widget.state),
       _ => SettingsTab(state: widget.state),
     };
     return Stack(
@@ -158,6 +166,10 @@ class _HomeShellState extends State<HomeShell> {
                   icon: Icon(Icons.people_outline),
                   selectedIcon: Icon(Icons.people),
                   label: 'Peers'),
+              NavigationDestination(
+                  icon: Icon(Icons.mic_outlined),
+                  selectedIcon: Icon(Icons.mic),
+                  label: 'PTT'),
               NavigationDestination(
                   icon: Icon(Icons.settings_outlined),
                   selectedIcon: Icon(Icons.settings),

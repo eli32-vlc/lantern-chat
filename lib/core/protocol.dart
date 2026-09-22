@@ -33,6 +33,13 @@ class LanternProtocol {
   static const udpMaxRetries = 10; // retry attempts before TCP fallback
   static const udpRetryMs = 300; // ms between retries
 
+  // PTT (Push-to-Talk) protocol
+  static const udpTypePttStart = 0x10; // voice stream start
+  static const udpTypePttData = 0x11; // voice chunk
+  static const udpTypePttStop = 0x12; // voice stream end
+  static const udpTypeTyping = 0x20; // typing indicator
+  static const pttSampleRate = 16000; // 16kHz mono
+
   // Group protocol frame types
   static const frameGroupInvite = 'group_invite';
   static const frameGroupLeave = 'group_leave';
