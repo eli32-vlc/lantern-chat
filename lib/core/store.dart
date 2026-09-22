@@ -164,7 +164,7 @@ class Store {
       {int limit = 200}) async {
     return db.query('messages',
         where: 'chat_id = ?', whereArgs: [chatId],
-        orderBy: 'ts DESC', limit: limit);
+        orderBy: 'ts ASC', limit: limit);
   }
 
   Future<List<Map<String, dynamic>>> searchMessages(String q,

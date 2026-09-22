@@ -1,6 +1,9 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
+import '../core/crypto.dart';
 import 'group_create.dart';
 import 'l10n.dart';
 
@@ -90,20 +93,44 @@ class _PeopleTabState extends State<PeopleTab> {
   }
 }
 
-class _TrustSheet extends StatelessWidget {
+class _TrustSheet extends StatefulWidget {
   final dynamic peer;
   final AppState state;
   const _TrustSheet({required this.peer, required this.state});
+  @override
+  State<_TrustSheet> createState() => _TrustSheetState();
+}
+
+class _TrustSheetState extends State<_TrustSheet> {
+  String _code = '…';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final myPub = widget.state.device!.pub.bytes;
+      final peerPub = base64Decode(widget.peer.pubB64 as String);
+      final code = await Crypto.verificationCode(myPub, peerPub);
+      if (mounted) setState(() => _code = code);
+    } catch (e) {
+      if (mounted) setState(() => _code = 'unavailable');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final p = widget.peer;
     return SafeArea(
       child: Padding(
         padding: EdgeInsets.fromLTRB(20, 8, 20, 20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('${S.of(context).verify} ${peer.name}',
+            Text('${S.of(context).verify} ${p.name}',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
             SizedBox(height: 4),
             Text(S.of(context).matchCode, style: TextStyle(color: Colors.grey)),
@@ -114,8 +141,8 @@ class _TrustSheet extends StatelessWidget {
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Text(peer.handle.isNotEmpty ? peer.handle : (peer.pubB64.isNotEmpty ? '${peer.pubB64.substring(0, 16)}…' : '…'),
-                  style: TextStyle(fontSize: 24, fontFamily: 'monospace', letterSpacing: 1.2)),
+              child: Text(_code,
+                  style: TextStyle(fontSize: 20, fontFamily: 'monospace', letterSpacing: 1.2)),
             ),
             SizedBox(height: 16),
             Row(
@@ -127,7 +154,7 @@ class _TrustSheet extends StatelessWidget {
                 SizedBox(width: 12),
                 Expanded(child: FilledButton(
                   onPressed: () async {
-                    await state.store.trustPeer(peer.id, true);
+                    await widget.state.store.trustPeer(widget.peer.id, true);
                     if (context.mounted) Navigator.pop(context);
                   },
                   child: Text(S.of(context).match),

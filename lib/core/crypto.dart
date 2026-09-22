@@ -119,4 +119,24 @@ class Crypto {
     );
     return derived.extractBytes();
   }
+
+  // ---- Verification ----
+
+  /// Generate a verification code from two public keys.
+  /// Both devices compute the same code by sorting the keys first.
+  static Future<String> verificationCode(List<int> pubA, List<int> pubB) async {
+    final sorted = [pubA, pubB]..sort((a, b) {
+      for (var i = 0; i < a.length && i < b.length; i++) {
+        if (a[i] != b[i]) return a[i].compareTo(b[i]);
+      }
+      return a.length.compareTo(b.length);
+    });
+    final combined = [...sorted[0], ...sorted[1]];
+    final h = await sha256Hex(combined);
+    final groups = <String>[];
+    for (var i = 0; i < 30 && i + 5 <= h.length; i += 5) {
+      groups.add(h.substring(i, i + 5));
+    }
+    return groups.join(' ');
+  }
 }
