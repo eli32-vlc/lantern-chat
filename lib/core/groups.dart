@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:uuid/uuid.dart';
 
@@ -8,7 +7,6 @@ import 'crypto.dart';
 import 'diag.dart';
 import 'identity.dart';
 import 'mesh.dart';
-import 'messages.dart';
 import 'protocol.dart';
 import 'store.dart';
 

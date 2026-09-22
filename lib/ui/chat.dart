@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
-import '../core/protocol.dart';
 import 'l10n.dart';
 import 'theme.dart';
 

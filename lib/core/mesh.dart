@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:nsd/nsd.dart';
 
+import 'crypto.dart';
 import 'diag.dart';
 import 'identity.dart';
 import 'protocol.dart';
@@ -68,8 +69,8 @@ class Mesh {
   final _peerCtrl = StreamController<List<Peer>>.broadcast();
   final _frameCtrl = StreamController<RawFrame>.broadcast();
   final _sessions = <String, List<int>>{};
-  final _sockets = <String, Socket>{};
-  final _helloReplied = <Socket, DateTime>{};
+  final sockets = <String, Socket>{};
+  final helloReplied = <Socket, DateTime>{};
   final _doneHandled = <Socket>{};
 
   Stream<List<Peer>> get peers => _peerCtrl.stream;
@@ -158,11 +159,11 @@ class Mesh {
     try { _udp?.close(); } catch (_) {}
     _udp = null;
     _udpPort = 0;
-    for (final s in _sockets.values) {
+    for (final s in sockets.values) {
       try { s.destroy(); } catch (_) {}
     }
-    _sockets.clear();
-    _helloReplied.clear();
+    sockets.clear();
+    helloReplied.clear();
     _doneHandled.clear();
     _sessions.clear();
   }
@@ -287,11 +288,11 @@ class Mesh {
     if (cached != null) {
       try {
         await cached.done.timeout(Duration.zero);
-        if (_sockets[peer.id] == cached) _sockets.remove(peer.id);
+        if (_sockets[peer.id] == cached) sockets.remove(peer.id);
       } on TimeoutException {
         return cached;
       } catch (_) {
-        if (_sockets[peer.id] == cached) _sockets.remove(peer.id);
+        if (_sockets[peer.id] == cached) sockets.remove(peer.id);
       }
     }
     try {
@@ -305,14 +306,14 @@ class Mesh {
             _frameCtrl.add(RawFrame(sock, peer.id, frame));
           }
         },
-        onError: (_) { _sockets.remove(peer.id); },
-        onDone: () { _sockets.remove(peer.id); },
+        onError: (_) { sockets.remove(peer.id); },
+        onDone: () { sockets.remove(peer.id); },
       );
       // Send hello
       await _sendHello(sock);
       return sock;
     } catch (_) {
-      _sockets.remove(peer.id);
+      sockets.remove(peer.id);
       return null;
     }
   }
@@ -346,7 +347,7 @@ class Mesh {
       sock.add(_encode(frame));
       await sock.flush();
     } catch (_) {
-      _sockets.remove(peer.id);
+      sockets.remove(peer.id);
     }
   }
 
@@ -432,13 +433,13 @@ class Mesh {
 
   void _checkHealth() {
     final dead = <String>[];
-    for (final e in _sockets.entries) {
+    for (final e in sockets.entries) {
       try {
         if (!_doneHandled.contains(e.value)) {
           _doneHandled.add(e.value);
           e.value.done.then((_) {
-            if (_sockets[e.key] == e.value) _sockets.remove(e.key);
-            _helloReplied.remove(e.value);
+            if (_sockets[e.key] == e.value) sockets.remove(e.key);
+            helloReplied.remove(e.value);
             _doneHandled.remove(e.value);
           }).catchError((_) { _doneHandled.remove(e.value); });
         }
@@ -448,8 +449,8 @@ class Mesh {
       }
     }
     for (final id in dead) {
-      final s = _sockets.remove(id);
-      if (s != null) { _helloReplied.remove(s); _doneHandled.remove(s); }
+      final s = sockets.remove(id);
+      if (s != null) { helloReplied.remove(s); _doneHandled.remove(s); }
       _sessions.remove(id);
     }
   }
@@ -458,7 +459,7 @@ class Mesh {
   static String _t(Uint8List? b) =>
       b == null ? '' : utf8.decode(b, allowMalformed: true);
 
-  static Uint8List _encode(Map<String, dynamic> json) {
+  static Uint8List encode(Map<String, dynamic> json) {
     final body = utf8.encode(jsonEncode(json));
     final out = Uint8List(4 + body.length);
     ByteData.view(out.buffer).setUint32(0, body.length, Endian.big);

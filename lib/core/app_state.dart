@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:cryptography/cryptography.dart';
+import 'package:cryptography/cryptography.dart' hide Crypto;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import 'content.dart';
+import 'crypto.dart';
 import 'diag.dart';
 import 'groups.dart';
 import 'identity.dart';
@@ -483,7 +484,7 @@ class ChatSummary {
   final bool isGroup;
 
   ChatSummary({
-    required this.id, required this.name, this.handle,
+    required this.id, required this.name, this.handle = '',
     this.lastText, this.lastTs, this.unread = 0, this.isGroup = false,
   });
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'crypto.dart';
@@ -226,9 +227,9 @@ class Messages {
 
     // Reply hello once per socket
     if (sock != null) {
-      final last = mesh._helloReplied[sock];
+      final last = mesh.helloReplied[sock];
       if (last == null || DateTime.now().difference(last) > Duration(seconds: 10)) {
-        mesh._helloReplied[sock] = DateTime.now();
+        mesh.helloReplied[sock] = DateTime.now();
         try {
           final hello = <String, dynamic>{
             't': P.hello, 'id': mesh.device.id,
@@ -240,7 +241,7 @@ class Messages {
             hello['aid'] = account!.id;
             hello['spk'] = await account!.pubB64;
           }
-          sock.add(Mesh._encode(hello));
+          sock.add(Mesh.encode(hello));
         } catch (_) {}
       }
     }
@@ -298,7 +299,7 @@ class Messages {
       final msgId = plain['id'] as String?;
       if (msgId != null && msgId.isNotEmpty && sock != null) {
         try {
-          sock.add(Mesh._encode({'t': P.ack, 'id': msgId}));
+          sock.add(Mesh.encode({'t': P.ack, 'id': msgId}));
         } catch (_) {}
       }
 
@@ -348,7 +349,7 @@ class Messages {
     final cursor = out.isNotEmpty ? out.last['ts'] as int : since;
     if (sock != null) {
       try {
-        sock.add(Mesh._encode({
+        sock.add(Mesh.encode({
           't': P.syncMsgs, 'from': mesh.device.id,
           'messages': out, 'cursor': cursor,
         }));
@@ -481,7 +482,7 @@ class Messages {
     for (final p in mesh.currentPeers) {
       if (p.host == host) return p.id;
     }
-    for (final e in mesh._sockets.entries) {
+    for (final e in mesh.sockets.entries) {
       try {
         if (e.value.remoteAddress.address == host) return e.key;
       } catch (_) {}

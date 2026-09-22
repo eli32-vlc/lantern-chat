@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
-import 'protocol.dart';
 
 /// SQLite store. One class, all tables, no business logic.
 class Store {
