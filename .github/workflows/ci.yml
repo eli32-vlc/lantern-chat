@@ -2,7 +2,7 @@ name: Lantern CI
 
 on:
   push:
-    branches: [main, beta]
+    branches: [main, beta, alpha]
   pull_request:
   workflow_dispatch:
 
