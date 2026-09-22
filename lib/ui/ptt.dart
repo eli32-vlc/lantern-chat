@@ -27,7 +27,7 @@ class _PttScreenState extends State<PttScreen> {
   bool _transmitting = false;
   bool _receiving = false;
   String? _receivingFrom;
-  String? _recordingPath;
+  String? _recPath;
   Timer? _presenceTimer;
   StreamSubscription? _eventSub;
 
@@ -93,7 +93,7 @@ class _PttScreenState extends State<PttScreen> {
 
     // Play the file
     try {
-      await player.play(DeviceFileSource(path));
+      await _player.play(DeviceFileSource(path));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Voice message played'), duration: Duration(seconds: 2)));
@@ -136,7 +136,7 @@ class _PttScreenState extends State<PttScreen> {
 
     // Record to temp file
     final path = '${Directory.systemTemp.path}/ptt_${DateTime.now().millisecondsSinceEpoch}.m4a';
-    _recordingPath = path;
+    _recPath = path;
     await _recorder.start(
       const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 16000, numChannels: 1, bitRate: 32000),
       path: path,
@@ -182,7 +182,7 @@ class _PttScreenState extends State<PttScreen> {
 
     // Store recording locally (no sendFile method yet)
     // The real-time UDP chunks handle delivery
-    _recordingPath = null;
+    _recPath = null;
   }
 
   @override

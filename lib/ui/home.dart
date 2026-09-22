@@ -20,7 +20,7 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
-  final _scaffoldKey = GlobalKey<ScaffoldState>();
+  
 
   @override
   void initState() {
