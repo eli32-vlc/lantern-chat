@@ -6,6 +6,7 @@ import 'package:record/record.dart';
 
 import '../core/app_state.dart';
 import '../core/engine.dart';
+import '../core/protocol.dart';
 import '../core/store.dart';
 import 'theme.dart';
 
@@ -250,7 +251,7 @@ class _PttTabState extends State<PttTab> {
                   boxShadow: _transmitting
                       ? [
                           BoxShadow(
-                            color: Colors.red.withOpacity(0.4),
+                            color: Colors.red.withValues(alpha: 0.4),
                             blurRadius: 20,
                             spreadRadius: 5,
                           )

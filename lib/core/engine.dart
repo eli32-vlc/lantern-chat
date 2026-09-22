@@ -913,7 +913,13 @@ class LanEngine {
               'max retries for $msgId, falling back to TCP');
           _pendingUdpAcks.remove(msgId);
           pending.retryTimer?.cancel();
-          _sendTcp(peer, sealed, msgId);
+          // Build TCP frame and fall back
+          final frame = LanternProtocol.encodeFrame({
+            't': 'payload',
+            'from': me.id,
+            'blob': base64Encode(sealed),
+          });
+          _sendTcp(frame, msgId);
           return;
         }
         _udpSocket!.send(pending.data, pending.addr, pending.port);
