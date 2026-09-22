@@ -194,7 +194,7 @@ class MeTab extends StatelessWidget {
     ));
   }
 
-  Widget _bgOption(Dialog d, AppState s, String mode, IconData icon, String title, String desc) {
+  Widget _bgOption(BuildContext d, AppState s, String mode, IconData icon, String title, String desc) {
     final selected = s.bgMode == mode;
     return SimpleDialogOption(
       onPressed: () { Navigator.pop(d); s.setBgMode(mode); },
