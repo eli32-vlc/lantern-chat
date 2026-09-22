@@ -26,11 +26,41 @@ class _PttTabState extends State<PttTab> {
   final _audioRecorder = AudioRecorder();
   final List<List<int>> _receivedChunks = [];
   String? _recPath;
+  // PTT Channels
+  String _currentChannel = LanternProtocol.pttDefaultChannel;
+  final Map<String, Set<String>> _channelPresence = {}; // channel -> peerIds
+  Timer? _presenceTimer;
 
   @override
   void initState() {
     super.initState();
     _setupPttCallbacks();
+    // Start presence ping
+    _presenceTimer = Timer.periodic(
+        const Duration(seconds: 5), (_) => _sendPresence());
+  }
+
+  void _joinChannel(String channel) {
+    setState(() {
+      _currentChannel = channel;
+      _channelPresence.putIfAbsent(channel, () => {});
+    });
+    _sendPresence();
+  }
+
+  void _sendPresence() {
+    final engine = widget.state.engine;
+    if (engine == null) return;
+    for (final peer in widget.state.peers) {
+      engine.sendPttPresence(peer, _currentChannel);
+    }
+    // Clean up stale presence (no ping for 15s)
+    for (final entry in _channelPresence.entries) {
+      entry.value.removeWhere((peerId) {
+        // Keep only if peer is still in peers list
+        return !widget.state.peers.any((p) => p.id == peerId);
+      });
+    }
   }
 
   void _setupPttCallbacks() {
@@ -57,8 +87,16 @@ class _PttTabState extends State<PttTab> {
           _receiving = false;
           _receivingFrom = null;
         });
-        // Play received audio
         _playReceived();
+      }
+    };
+
+    engine.onPttPresence = (peerId, channel) {
+      if (mounted) {
+        setState(() {
+          _channelPresence.putIfAbsent(channel, () => {});
+          _channelPresence[channel]!.add(peerId);
+        });
       }
     };
   }
@@ -78,10 +116,11 @@ class _PttTabState extends State<PttTab> {
 
   @override
   void dispose() {
-    // Clear PTT callbacks
+    _presenceTimer?.cancel();
     widget.state.engine?.onPttStart = null;
     widget.state.engine?.onPttData = null;
     widget.state.engine?.onPttStop = null;
+    widget.state.engine?.onPttPresence = null;
     _audioRecorder.dispose();
     super.dispose();
   }
@@ -156,37 +195,99 @@ class _PttTabState extends State<PttTab> {
   @override
   Widget build(BuildContext context) {
     final peers = widget.state.peers;
+    final channels = ['general', 'emergency', 'info'];
+    final currentPresence = _channelPresence[_currentChannel] ?? {};
     return Column(
       children: [
-        // Peer selector
+        // Channel selector
         Container(
           padding: const EdgeInsets.all(12),
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.radio, size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: DropdownButton<String>(
-                  isExpanded: true,
-                  hint: L.txt('Select peer to call', size: L.body),
-                  value: _selectedPeerId,
-                  items: peers.map((p) {
-                    return DropdownMenuItem(
-                      value: p.id,
-                      child: L.txt(
-                          '${p.name} ${p.handle}',
-                          size: L.body),
-                    );
-                  }).toList(),
-                  onChanged: (v) {
-                    final p = peers.where((pp) => pp.id == v).firstOrNull;
-                    setState(() {
-                      _selectedPeerId = v;
-                      _selectedPeerName = p?.name;
-                    });
-                  },
-                ),
+              Row(
+                children: [
+                  const Icon(Icons.radio, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      value: _currentChannel,
+                      items: channels.map((c) {
+                        final count = (_channelPresence[c] ?? {}).length;
+                        return DropdownMenuItem(
+                          value: c,
+                          child: Row(
+                            children: [
+                              L.txt('#$c', size: L.body, weight: FontWeight.w600),
+                              if (count > 0) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: Colors.green,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                L.txt('$count', size: L.tiny, color: L.muted(context)),
+                              ],
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (v) {
+                        if (v != null) _joinChannel(v);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              // Peer selector
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.person, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      hint: L.txt('Select peer', size: L.body),
+                      value: _selectedPeerId,
+                      items: peers.map((p) {
+                        final onChannel = currentPresence.contains(p.id);
+                        return DropdownMenuItem(
+                          value: p.id,
+                          child: Row(
+                            children: [
+                              if (onChannel) ...[
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: Colors.green,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                              ],
+                              L.txt('${p.name} ${p.handle}', size: L.body),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (v) {
+                        final p = peers.where((pp) => pp.id == v).firstOrNull;
+                        setState(() {
+                          _selectedPeerId = v;
+                          _selectedPeerName = p?.name;
+                        });
+                      },
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

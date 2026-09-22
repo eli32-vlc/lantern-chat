@@ -93,6 +93,7 @@ class KnownPeer {
   final String name;
   final String handle; // cryptographic short handle
   final String accountId; // account UUID (shared across devices)
+  final String signPubB64; // Ed25519 signing public key
   final String status;
   final String pubB64;
   final String fingerprint;
@@ -104,6 +105,7 @@ class KnownPeer {
     required this.name,
     this.handle = '',
     this.accountId = '',
+    this.signPubB64 = '',
     required this.status,
     required this.pubB64,
     required this.fingerprint,
@@ -116,6 +118,7 @@ class KnownPeer {
         'name': name,
         'handle': handle,
         'account_id': accountId,
+        'sign_pub': signPubB64,
         'status': status,
         'pub': pubB64,
         'fingerprint': fingerprint,
@@ -132,12 +135,12 @@ class ChatStore {
     final path = p.join(dir, 'lantern.db');
     _db = await openDatabase(
       path,
-      version: 7,
+      version: 8,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE peers(
             id TEXT PRIMARY KEY, name TEXT NOT NULL, handle TEXT NOT NULL DEFAULT '',
-            account_id TEXT NOT NULL DEFAULT '',
+            account_id TEXT NOT NULL DEFAULT '', sign_pub TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT '',
             pub TEXT NOT NULL, fingerprint TEXT NOT NULL,
             trusted INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL DEFAULT 0
@@ -255,6 +258,10 @@ class ChatStore {
               PRIMARY KEY (hash, peer_id)
             )''');
         }
+        if (oldV < 8) {
+          await db.execute(
+              "ALTER TABLE peers ADD COLUMN sign_pub TEXT NOT NULL DEFAULT ''");
+        }
       },
     );
     return _db!;
@@ -277,6 +284,7 @@ class ChatStore {
       name: r['name'] as String,
       handle: (r['handle'] as String?) ?? '',
       accountId: (r['account_id'] as String?) ?? '',
+      signPubB64: (r['sign_pub'] as String?) ?? '',
       status: (r['status'] as String?) ?? '',
       pubB64: r['pub'] as String,
       fingerprint: r['fingerprint'] as String,
@@ -293,6 +301,7 @@ class ChatStore {
               name: r['name'] as String,
               handle: (r['handle'] as String?) ?? '',
               accountId: (r['account_id'] as String?) ?? '',
+              signPubB64: (r['sign_pub'] as String?) ?? '',
               status: (r['status'] as String?) ?? '',
               pubB64: r['pub'] as String,
               fingerprint: r['fingerprint'] as String,

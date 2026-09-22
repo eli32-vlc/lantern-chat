@@ -184,6 +184,51 @@ class AccountIdentity {
   }
 
   Future<String> get handle => deriveHandle(signPub);
+
+  /// Sign a message with the account's Ed25519 key.
+  /// Returns base64-encoded signature.
+  Future<String> sign(List<int> message) async {
+    final ed25519 = Ed25519();
+    final signature = await ed25519.sign(message, keyPair: signKP);
+    return base64Encode(signature.bytes);
+  }
+
+  /// Get the signing public key as base64 (for verification by peers).
+  Future<String> get signPubB64 async => base64Encode(signPub.bytes);
+
+  /// Verify a signature from a peer.
+  static Future<bool> verify(
+      List<int> message, String signatureB64, String pubKeyB64) async {
+    try {
+      final ed25519 = Ed25519();
+      final pubBytes = base64Decode(pubKeyB64);
+      final pub = SimplePublicKey(pubBytes, type: KeyPairType.ed25519);
+      final sigBytes = base64Decode(signatureB64);
+      final sig = Signature(sigBytes, publicKey: pub);
+      return await ed25519.verify(message, signature: sig);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Export account to a file-safe JSON string.
+  Future<String> exportToFile() async {
+    final seed = await signKP.extractPrivateKeyBytes();
+    return jsonEncode({
+      'account_id': id,
+      'sign_seed': base64Encode(seed),
+      'sign_pub': await signPubB64,
+      'v': 1,
+    });
+  }
+
+  /// Import account from a file JSON string.
+  static Future<AccountIdentity> importFromFile(String json) async {
+    final data = jsonDecode(json) as Map<String, dynamic>;
+    final accountId = data['account_id'] as String;
+    final signSeed = base64Decode(data['sign_seed'] as String);
+    return fromSeed(accountId, signSeed);
+  }
 }
 
 /// Group encryption key. Derived from a shared group secret via HKDF.

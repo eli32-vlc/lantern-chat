@@ -467,6 +467,7 @@ class LanEngine {
   void Function(String peerId, List<int> audioData)? onPttData;
   void Function(String peerId)? onPttStart;
   void Function(String peerId)? onPttStop;
+  void Function(String peerId, String channel)? onPttPresence;
 
   /// Send PTT voice data to a peer.
   void sendPttData(LanPeer peer, List<int> audioChunk) {
@@ -497,6 +498,17 @@ class LanEngine {
     if (_udpSocket == null || peer.udpPort == 0) return;
     final packet = _buildUdpData(
         'ptt', Uint8List.fromList([LanternProtocol.udpTypePttStop]));
+    _udpSocket!.send(
+        packet, InternetAddress(peer.host), peer.udpPort);
+  }
+
+  /// Send PTT channel presence.
+  void sendPttPresence(LanPeer peer, String channel) {
+    if (_udpSocket == null || peer.udpPort == 0) return;
+    final channelBytes = utf8.encode(channel);
+    final packet = _buildUdpData(
+        'ptt-pr',
+        Uint8List.fromList([LanternProtocol.udpTypePttPresence, ...channelBytes]));
     _udpSocket!.send(
         packet, InternetAddress(peer.host), peer.udpPort);
   }
@@ -830,8 +842,11 @@ class LanEngine {
         if (account != null) ...{
           'ah': await account!.handle,
           'aid': account!.id,
+          'spk': await account!.signPubB64,
         },
         'v': LanternProtocol.protoVersion,
+        'av': LanternProtocol.appVersion,
+        'ab': LanternProtocol.appBuild,
       }));
       return sock;
     } catch (_) {
@@ -868,9 +883,29 @@ class LanEngine {
       final ah = json['ah'] as String? ?? '';
       final aid = json['aid'] as String? ?? '';
       final peerVersion = json['v'] as int? ?? 0;
+      final peerAppVersion = json['av'] as String? ?? '';
+      final peerAppBuild = json['ab'] as int? ?? 0;
+      final peerSignPub = json['spk'] as String? ?? '';
       if (id.isEmpty || pk.isEmpty || id == me.id) return;
       // B48: Reject incompatible protocol versions
       if (peerVersion > LanternProtocol.protoVersion) return;
+      // Log version info
+      if (peerAppVersion.isNotEmpty) {
+        DiagLog.add('proto',
+            'peer $id version=$peerAppVersion build=$peerAppBuild');
+        if (peerAppBuild > LanternProtocol.appBuild) {
+          DiagLog.add('proto',
+              'WARNING: peer $id has newer version ($peerAppVersion)');
+        }
+      }
+      // Track inbound socket by peer id so sendTo can reuse it.
+      // This prevents duplicate dials and the hello echo loop.
+      if (dialPeerId == null && !_sockets.containsKey(id)) {
+        _sockets[id] = sock;
+        sock.done.then((_) {
+          if (_sockets[id] == sock) _sockets.remove(id);
+        }).catchError((_) {});
+      }
       // Track inbound socket by peer id so sendTo can reuse it.
       // This prevents duplicate dials and the hello echo loop.
       if (dialPeerId == null && !_sockets.containsKey(id)) {
@@ -895,8 +930,11 @@ class LanEngine {
             if (account != null) ...{
               'ah': await account!.handle,
               'aid': account!.id,
+              'spk': await account!.signPubB64,
             },
             'v': LanternProtocol.protoVersion,
+            'av': LanternProtocol.appVersion,
+            'ab': LanternProtocol.appBuild,
           }));
         } catch (_) {}
       }
@@ -908,7 +946,7 @@ class LanEngine {
         } catch (_) {}
       }
       // Update peer's handle and account ID from hello frame.
-      if (ah.isNotEmpty || aid.isNotEmpty) {
+      if (ah.isNotEmpty || aid.isNotEmpty || peerSignPub.isNotEmpty) {
         final existing = await store.getPeer(id);
         if (existing != null) {
           await store.upsertPeer(KnownPeer(
@@ -916,6 +954,7 @@ class LanEngine {
             name: existing.name,
             handle: ah.isNotEmpty ? ah : existing.handle,
             accountId: aid.isNotEmpty ? aid : existing.accountId,
+            signPubB64: peerSignPub.isNotEmpty ? peerSignPub : existing.signPubB64,
             status: existing.status,
             pubB64: existing.pubB64,
             fingerprint: existing.fingerprint,
@@ -929,10 +968,21 @@ class LanEngine {
     if (t == 'payload') {
       final from = json['from'] as String? ?? dialPeerId ?? '';
       final blob = json['blob'] as String? ?? '';
+      final sig = json['sig'] as String?;
+      final signPubB64 = json['sign_pub'] as String?;
       if (from.isEmpty || blob.isEmpty || from == me.id) return;
       final known = await store.getPeer(from);
       if (known == null || !known.trusted) return;
       if (known.pubB64.isEmpty) return;
+      // Verify signature if present (prevents impersonation)
+      if (sig != null && signPubB64 != null) {
+        final valid = await AccountIdentity.verify(
+            base64Decode(blob), sig, signPubB64);
+        if (!valid) {
+          DiagLog.add('proto', 'INVALID signature from $from — possible impersonation');
+          return;
+        }
+      }
       final key = await _sessionFor(from, known.pubB64);
       if (key == null) return;
       try {
@@ -1326,10 +1376,17 @@ class LanEngine {
     if (key == null) return false;
     final sealed = await PayloadBox.seal(key, payload);
     final msgId = payload['id'] as String?;
+    // Sign the payload for authenticity (prevents impersonation on public WiFi)
+    String? sig;
+    if (account != null) {
+      sig = await account!.sign(sealed);
+    }
     final frame = LanternProtocol.encodeFrame({
       't': 'payload',
       'from': me.id,
       'blob': base64Encode(sealed),
+      if (sig != null) 'sig': sig,
+      if (account != null) 'sign_pub': await account!.signPubB64,
     });
 
     // Try UDP for small payloads if peer has a UDP port
@@ -1529,6 +1586,14 @@ class LanEngine {
           final sender = _findPeerByHost(dg.address.address);
           if (sender != null && onPttStop != null) {
             onPttStop!(sender);
+          }
+          return;
+        }
+        if (subType == LanternProtocol.udpTypePttPresence && payload.length > 1) {
+          final sender = _findPeerByHost(dg.address.address);
+          if (sender != null && onPttPresence != null) {
+            final channel = utf8.decode(payload.sublist(1), allowMalformed: true);
+            onPttPresence!(sender, channel);
           }
           return;
         }

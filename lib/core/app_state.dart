@@ -352,6 +352,75 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   // ---- Account export / import (QR key transfer) ----
 
+  /// Export account identity to a JSON string for file-based backup.
+  Future<String> exportAccountToFile() async {
+    if (account == null) throw StateError('No account');
+    return account!.exportToFile();
+  }
+
+  /// Import account identity from a JSON string (file-based).
+  /// Returns 'true' on success, 'confirm' if existing account would be replaced.
+  Future<String> importAccountFromFile(String json,
+      {bool forceConfirm = false}) async {
+    if (account != null && onboarded && !forceConfirm) {
+      return 'confirm';
+    }
+    try {
+      final imported = await AccountIdentity.importFromFile(json);
+      await store.setKv('account_id', imported.id);
+      final seed = await imported.signKP.extractPrivateKeyBytes();
+      await store.setKv('account_sign_priv', base64Encode(seed));
+      AccountIdentity.instance = imported;
+      account = imported;
+      // Generate new device keypair
+      final x25519 = X25519();
+      final deviceKP = await x25519.newKeyPair();
+      final deviceSeed = await deviceKP.extractPrivateKeyBytes();
+      final deviceId = const Uuid().v4();
+      await store.setKv('device_id', deviceId);
+      await store.setKv('device_priv', base64Encode(deviceSeed));
+      identity = await DeviceIdentity.fromSeed(deviceId, deviceSeed);
+      await restartEngine();
+      notifyListeners();
+      return 'true';
+    } catch (e) {
+      return 'false';
+    }
+  }
+
+  /// Factory reset — wipe everything and start fresh.
+  Future<void> factoryReset() async {
+    try {
+      await engine?.stop();
+    } catch (_) {}
+    engine?.dispose();
+    engine = null;
+    engineUp = false;
+    peers = [];
+    // Clear database
+    await store.db.delete('messages');
+    await store.db.delete('peers');
+    await store.db.delete('groups');
+    await store.db.delete('group_members');
+    await store.db.delete('content');
+    await store.db.delete('content_pieces');
+    await store.db.delete('content_peers');
+    await store.db.delete('sync_state');
+    await store.db.delete('msg_queue');
+    await store.db.delete('kv');
+    // Clear account
+    AccountIdentity.instance = null;
+    account = null;
+    identity = null;
+    // Clear preferences
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    onboarded = false;
+    displayName = '';
+    status = 'Available';
+    notifyListeners();
+  }
+
   /// Generate encrypted QR data for linking another device.
   /// Returns [qrData, passphrase] where qrData is the base64 QR content
   /// and passphrase is the 6-digit code the user must enter on the new device.

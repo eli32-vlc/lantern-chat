@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_state.dart';
+import '../core/protocol.dart';
 import 'diag_page.dart';
 import 'onboarding.dart';
 import 'qr_screens.dart';
@@ -96,7 +101,7 @@ class _SettingsTabState extends State<SettingsTab> {
             title: L.txt('Link another device', size: L.body),
             subtitle: L.muteTxt(context, 'Show QR code to link a second device'),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => QrExportScreen(state: state))),
+                builder: (_) => QrExportScreen(state: widget.state))),
           ),
           ListTile(
             dense: true,
@@ -104,7 +109,74 @@ class _SettingsTabState extends State<SettingsTab> {
             title: L.txt('Import account', size: L.body),
             subtitle: L.muteTxt(context, 'Scan QR from another device'),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => QrImportScreen(state: state))),
+                builder: (_) => QrImportScreen(state: widget.state))),
+          ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.save_alt, size: 22),
+            title: L.txt('Export to file', size: L.body),
+            subtitle: L.muteTxt(context, 'Save account key as file'),
+            onTap: () async {
+              try {
+                final json = await widget.state.exportAccountToFile();
+                final dir = Directory.systemTemp;
+                final file = File(
+                    '${dir.path}/lantern-backup-${DateTime.now().millisecondsSinceEpoch}.json');
+                await file.writeAsString(json);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Saved: ${file.path}')));
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Export failed: $e')));
+                }
+              }
+            },
+          ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.file_upload, size: 22),
+            title: L.txt('Import from file', size: L.body),
+            subtitle: L.muteTxt(context, 'Load account key from file'),
+            onTap: () async {
+              final result = await FilePicker.pickFiles(
+                  type: FileType.custom,
+                  allowedExtensions: ['json']);
+              if (result.isEmpty || result.single.path == null) return;
+              final json = await File(result.single.path!).readAsString();
+              final res = await widget.state.importAccountFromFile(json);
+              if (!context.mounted) return;
+              if (res == 'confirm') {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (d) => AlertDialog(
+                    title: L.txt('Replace account?', size: L.title),
+                    content: L.txt(
+                        'This will replace your current account. Continue?',
+                        size: L.body),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(d, false),
+                          child: L.txt('Cancel', size: L.body)),
+                      TextButton(
+                          onPressed: () => Navigator.pop(d, true),
+                          child: L.txt('Replace', size: L.body, color: Colors.red)),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  await widget.state.importAccountFromFile(json, forceConfirm: true);
+                }
+              } else if (res == 'true') {
+                ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Account imported!')));
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Import failed.')));
+              }
+            },
           ),
           if (defaultTargetPlatform == TargetPlatform.android)
             ListTile(
@@ -137,12 +209,45 @@ class _SettingsTabState extends State<SettingsTab> {
             dense: true,
             leading: const Icon(Icons.info_outline, size: 22),
             title: L.txt('About', size: L.body),
-            subtitle: L.muteTxt(context, 'Version 0.1.0'),
+            subtitle: L.muteTxt(context, 'Version ${LanternProtocol.appVersion}'),
             onTap: () => showAboutDialog(
               context: context,
               applicationName: 'Lantern',
-              applicationVersion: '0.1.0',
+              applicationVersion: LanternProtocol.appVersion,
             ),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.restore, size: 22, color: Colors.red),
+            title: L.txt('Factory reset', size: L.body, color: Colors.red),
+            subtitle: L.muteTxt(context, 'Erase everything and start fresh'),
+            onTap: () async {
+              final confirm = await showDialog<bool>(
+                context: context,
+                builder: (d) => AlertDialog(
+                  title: L.txt('Factory reset?', size: L.title),
+                  content: L.txt(
+                      'This will delete ALL data: messages, contacts, groups, content. This cannot be undone.',
+                      size: L.body),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(d, false),
+                        child: L.txt('Cancel', size: L.body)),
+                    TextButton(
+                        onPressed: () => Navigator.pop(d, true),
+                        child: L.txt('Reset everything',
+                            size: L.body, color: Colors.red)),
+                  ],
+                ),
+              );
+              if (confirm == true) {
+                await widget.state.factoryReset();
+                if (context.mounted) {
+                  Navigator.of(context).popUntil((r) => r.isFirst);
+                }
+              }
+            },
           ),
         ],
       ),

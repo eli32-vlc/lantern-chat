@@ -10,6 +10,8 @@ class LanternProtocol {
   static const serviceType = '_lantern._tcp';
   static const serviceNamePrefix = 'lantern-';
   static const protoVersion = 1;
+  static const appVersion = '0.2.0';
+  static const appBuild = 2;
   static const tcpBacklog = 16;
   static const frameMaxBytes = 8 * 1024 * 1024; // 8MB per frame (file chunks are 64KB)
 
@@ -39,6 +41,12 @@ class LanternProtocol {
   static const udpTypePttStop = 0x12; // voice stream end
   static const udpTypeTyping = 0x20; // typing indicator
   static const pttSampleRate = 16000; // 16kHz mono
+  static const pttDefaultChannel = 'general';
+
+  // PTT channel presence
+  static const udpTypePttJoin = 0x13; // join channel
+  static const udpTypePttLeave = 0x14; // leave channel
+  static const udpTypePttPresence = 0x15; // presence ping
 
   // File transfer protocol
   static const frameFileOffer = 'file_offer'; // sender -> receiver: offer file
