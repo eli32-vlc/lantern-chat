@@ -5,7 +5,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
-import '../core/store.dart';
 import 'theme.dart';
 
 /// Content tab — decentralized file sharing and browsing.
@@ -105,9 +104,11 @@ class _ContentTabState extends State<ContentTab> {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
+    return Stack(
+      children: [
+        RefreshIndicator(
+          onRefresh: _load,
+          child: ListView(
         children: [
           // Published content
           Padding(
@@ -136,6 +137,18 @@ class _ContentTabState extends State<ContentTab> {
           for (final item in _available) _buildItem(item, isPublished: false),
         ],
       ),
+        ),
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: FloatingActionButton(
+            heroTag: 'content_publish',
+            onPressed: _publish,
+            tooltip: 'Publish file',
+            child: const Icon(Icons.add),
+          ),
+        ),
+      ],
     );
   }
 
@@ -229,10 +242,11 @@ class _ContentTabState extends State<ContentTab> {
       );
     } else if (mime.startsWith('text/') || mime == 'application/json' ||
         mime == 'application/javascript') {
-      file.readAsString().then((text) {
-        showDialog(
-          context: context,
-          builder: (d) => Dialog(
+      final text = await file.readAsString();
+      if (!context.mounted) return;
+      showDialog(
+        context: context,
+        builder: (d) => Dialog(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -255,7 +269,7 @@ class _ContentTabState extends State<ContentTab> {
             ),
           ),
         );
-      });
+      );
     } else {
       showDialog(
         context: context,

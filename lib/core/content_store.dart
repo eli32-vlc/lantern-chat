@@ -1,10 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
-import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -14,6 +12,9 @@ import 'package:sqflite/sqflite.dart';
 class ContentStore {
   Database? _db;
   String? _basePath;
+
+  /// Expose database for direct queries.
+  Database get db => _db!;
 
   Future<void> open(Database db) async {
     _db = db;
@@ -138,7 +139,6 @@ class ContentStore {
     final meta = await _db!.query('content', where: 'hash = ?', whereArgs: [hash]);
     if (meta.isEmpty) return null;
     final totalPieces = meta.first['pieces'] as int;
-    final name = meta.first['name'] as String;
 
     final pieces = <int, Uint8List>{};
     for (var i = 0; i < totalPieces; i++) {

@@ -12,7 +12,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
-import 'compat.dart';
 import 'content_store.dart';
 import 'diag.dart';
 import 'engine.dart';
