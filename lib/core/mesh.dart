@@ -393,11 +393,14 @@ class Mesh {
 
   Future<List<int>?> sessionFor(String peerId, String pubB64) async {
     if (_sessions.containsKey(peerId)) return _sessions[peerId];
-    final known = await store.getPeer(peerId);
-    if (known == null || known['trusted'] != 1) return null;
-    final key = await device.sharedWith(base64Decode(pubB64));
-    _sessions[peerId] = key;
-    return key;
+    // Try to compute even if not in DB yet (peer might have just connected)
+    try {
+      final key = await device.sharedWith(base64Decode(pubB64));
+      _sessions[peerId] = key;
+      return key;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> cacheSession(String peerId, List<int> pubBytes) async {

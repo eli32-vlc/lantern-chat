@@ -9,7 +9,6 @@ import '../core/protocol.dart';
 import 'l10n.dart';
 import 'qr_screens.dart';
 
-/// Me tab — profile, settings, export, about.
 class MeTab extends StatelessWidget {
   final AppState state;
   const MeTab({super.key, required this.state});
@@ -51,6 +50,28 @@ class MeTab extends StatelessWidget {
             title: Text(S.of(context).editProfile),
             onTap: () => _editProfile(context),
           ),
+
+          // Notifications
+          SwitchListTile(
+            secondary: Icon(Icons.notifications_outlined),
+            title: Text(S.of(context).notifications),
+            subtitle: Text(S.of(context).notificationsDesc),
+            value: s.notificationsEnabled,
+            onChanged: (v) => s.setNotifications(v),
+          ),
+
+          // Android background mode
+          if (Platform.isAndroid) ...[
+            ListTile(
+              leading: Icon(Icons.battery_saver),
+              title: Text(S.of(context).backgroundMode),
+              subtitle: Text(_bgModeLabel(s.bgMode)),
+              trailing: Icon(Icons.chevron_right),
+              onTap: () => _showBgModePicker(context, s),
+            ),
+          ],
+
+          Divider(height: 1),
 
           // Link device
           ListTile(
@@ -117,60 +138,6 @@ class MeTab extends StatelessWidget {
 
           Divider(height: 1),
 
-          // Android background service
-          if (Platform.isAndroid) ...[
-            ListTile(
-              leading: Icon(Icons.battery_saver),
-              title: Text('Background mode'),
-              subtitle: Text('Keep running when app is closed'),
-              trailing: Switch(
-                value: true,
-                onChanged: (v) async {
-                  if (v) {
-                    await const MethodChannel('com.lantern/service').invokeMethod('startService');
-                  } else {
-                    await const MethodChannel('com.lantern/service').invokeMethod('stopService');
-                  }
-                },
-              ),
-            ),
-            ListTile(
-              leading: Icon(Icons.notifications_active),
-              title: Text('Service type'),
-              subtitle: Text('How the app stays alive in background'),
-              onTap: () => showDialog(context: context, builder: (d) => SimpleDialog(
-                title: Text('Background service type'),
-                children: [
-                  SimpleDialogOption(
-                    onPressed: () { Navigator.pop(d); },
-                    child: ListTile(
-                      title: Text('Connected device'),
-                      subtitle: Text('Best for LAN chat — keeps WiFi active'),
-                      leading: Icon(Icons.wifi, color: Colors.green),
-                    ),
-                  ),
-                  SimpleDialogOption(
-                    onPressed: () { Navigator.pop(d); },
-                    child: ListTile(
-                      title: Text('Location'),
-                      subtitle: Text('Required on some devices for mDNS discovery'),
-                      leading: Icon(Icons.location_on, color: Colors.blue),
-                    ),
-                  ),
-                  SimpleDialogOption(
-                    onPressed: () { Navigator.pop(d); },
-                    child: ListTile(
-                      title: Text('None'),
-                      subtitle: Text('App may be killed by system to save battery'),
-                      leading: Icon(Icons.battery_alert, color: Colors.orange),
-                    ),
-                  ),
-                ],
-              )),
-            ),
-            Divider(height: 1),
-          ],
-
           // Factory reset
           ListTile(
             leading: Icon(Icons.restore, color: Colors.red),
@@ -200,6 +167,43 @@ class MeTab extends StatelessWidget {
             subtitle: Text('${S.of(context).version} ${P.appVersion}'),
           ),
         ],
+      ),
+    );
+  }
+
+  String _bgModeLabel(String mode) {
+    switch (mode) {
+      case 'notification': return 'Stay alive using notification (recommended)';
+      case 'music': return 'Stay alive using silent audio (more reliable)';
+      case 'none': return 'System may kill app to save battery';
+      default: return '';
+    }
+  }
+
+  void _showBgModePicker(BuildContext context, AppState s) {
+    showDialog(context: context, builder: (d) => SimpleDialog(
+      title: Text('Background mode'),
+      children: [
+        _bgOption(d, s, 'notification', Icons.notifications_active,
+            'Notification', 'Uses a silent notification to keep app alive. Recommended for most devices.'),
+        _bgOption(d, s, 'music', Icons.music_note,
+            'Silent audio', 'Plays silent audio to keep app alive. More reliable on some devices but uses slightly more battery.'),
+        _bgOption(d, s, 'none', Icons.battery_alert,
+            'Disabled', 'App may be killed by system to save battery. Discovery stops when app is backgrounded.'),
+      ],
+    ));
+  }
+
+  Widget _bgOption(Dialog d, AppState s, String mode, IconData icon, String title, String desc) {
+    final selected = s.bgMode == mode;
+    return SimpleDialogOption(
+      onPressed: () { Navigator.pop(d); s.setBgMode(mode); },
+      child: ListTile(
+        leading: Icon(icon, color: selected ? Colors.green : null),
+        title: Text(title, style: TextStyle(fontWeight: selected ? FontWeight.bold : FontWeight.normal)),
+        subtitle: Text(desc),
+        trailing: selected ? Icon(Icons.check, color: Colors.green) : null,
+        contentPadding: EdgeInsets.zero,
       ),
     );
   }

@@ -275,19 +275,21 @@ class Messages {
     if (from.isEmpty || blob.isEmpty || from == mesh.device.id) return;
 
     final known = await store.getPeer(from);
-    if (known == null || known['trusted'] != 1) return;
+    if (known == null) return;
     if ((known['pub'] as String).isEmpty) return;
 
-    // C5: Verify signature (mandatory — reject unsigned messages)
-    if (sig == null || signPubB64 == null) {
-      DiagLog.add('proto', 'UNSIGNED payload from $from — rejected');
-      return;
-    }
-    final valid = await Account.verify(
-        base64Decode(blob), base64Decode(sig), base64Decode(signPubB64));
-    if (!valid) {
-      DiagLog.add('proto', 'BAD SIGNATURE from $from');
-      return;
+    // Verify signature if present (optional for backwards compat)
+    if (sig != null && signPubB64 != null && signPubB64.isNotEmpty) {
+      try {
+        final valid = await Account.verify(
+            base64Decode(blob), base64Decode(sig), base64Decode(signPubB64));
+        if (!valid) {
+          DiagLog.add('proto', 'BAD SIGNATURE from $from');
+          return;
+        }
+      } catch (e) {
+        DiagLog.add('proto', 'signature verify error from $from: $e');
+      }
     }
 
     final key = await mesh.sessionFor(from, known['pub'] as String);

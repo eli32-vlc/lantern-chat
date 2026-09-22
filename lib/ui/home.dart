@@ -8,7 +8,7 @@ import 'l10n.dart';
 import 'onboarding.dart';
 import 'people.dart';
 import 'me.dart';
-import 'ptt.dart';
+import 'web_tab.dart';
 
 class HomeShell extends StatefulWidget {
   final AppState state;
@@ -20,20 +20,17 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
-  
+  String? _activeChatId;
 
   @override
   void initState() {
     super.initState();
-    // In-app notification for incoming messages
     widget.state.onMessage = (name, text, chatId) {
       if (!mounted) return;
-      // Don't show if we're already in that chat
-      final nav = Navigator.of(context);
-      if (nav.canPop()) {
-        // We're in a sub-screen, check if it's the right chat
-        // For simplicity, always show
-      }
+      // Don't show notification if user is already in that chat
+      if (_activeChatId == chatId) return;
+      // Don't show if notification setting is off
+      if (!widget.state.notificationsEnabled) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Row(children: [
           Icon(Icons.message, size: 18, color: Colors.white),
@@ -42,7 +39,6 @@ class _HomeShellState extends State<HomeShell> {
         ]),
         duration: Duration(seconds: 3),
         action: SnackBarAction(label: 'Open', onPressed: () {
-          // Navigate to the chat
           widget.state.refreshChats();
         }),
       ));
@@ -56,10 +52,13 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _openChat(String id, String name, {bool group = false}) {
+    _activeChatId = id;
     final page = group
         ? GroupChatPage(state: widget.state, groupId: id, groupName: name)
         : ChatPage(state: widget.state, peerId: id, peerName: name);
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => page))
+        .then((_) => _activeChatId = null);
   }
 
   @override
@@ -76,7 +75,7 @@ class _HomeShellState extends State<HomeShell> {
             children: [
               ChatsTab(state: widget.state, onOpen: _openChat),
               PeopleTab(state: widget.state, onOpen: _openChat),
-              PttScreen(state: widget.state),
+              WebTab(state: widget.state),
               MeTab(state: widget.state),
             ],
           ),
@@ -95,9 +94,9 @@ class _HomeShellState extends State<HomeShell> {
                 label: S.of(context).people,
               ),
               NavigationDestination(
-                icon: Icon(Icons.radio),
-                selectedIcon: Icon(Icons.radio),
-                label: S.of(context).ptt,
+                icon: Icon(Icons.folder_outlined),
+                selectedIcon: Icon(Icons.folder),
+                label: S.of(context).distributedWeb,
               ),
               NavigationDestination(
                 icon: Icon(Icons.person_outline),

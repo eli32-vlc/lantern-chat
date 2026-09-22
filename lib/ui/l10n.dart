@@ -186,14 +186,17 @@ abstract class _Strings {
   String get groupEncrypted;
   String get leaveGroup;
   String get leaveGroupConfirm;
-  String get ptt;
-  String get selectPeer;
-  String get selectPeerAbove;
-  String get holdToTalk;
-  String get releaseToStop;
-  String get transmitting;
-  String get receivingFrom;
-  String get micPermissionRequired;
+  String get notifications;
+  String get notificationsDesc;
+  String get backgroundMode;
+  String get distributedWeb;
+  String get distributedWebDesc;
+  String get howItWorks;
+  String get myFiles;
+  String get noPublished;
+  String get fromPeers;
+  String get noAvailable;
+  String get publishFile;
 }
 
 class _En implements _Strings {
@@ -269,14 +272,17 @@ class _En implements _Strings {
   @override final groupEncrypted = 'Group encrypted';
   @override final leaveGroup = 'Leave group';
   @override final leaveGroupConfirm = 'You will no longer receive messages from this group.';
-  @override final ptt = 'PTT';
-  @override final selectPeer = 'Select peer';
-  @override final selectPeerAbove = 'Select a peer above';
-  @override final holdToTalk = 'Hold to talk';
-  @override final releaseToStop = 'Release to stop';
-  @override final transmitting = 'Transmitting…';
-  @override final receivingFrom = 'Receiving from';
-  @override final micPermissionRequired = 'Microphone permission required';
+  @override final notifications = 'Notifications';
+  @override final notificationsDesc = 'Show alerts when messages arrive';
+  @override final backgroundMode = 'Background mode';
+  @override final distributedWeb = 'Shared Files';
+  @override final distributedWebDesc = 'Share files directly with nearby devices. Files are stored on each device that downloads them — the more people have a file, the faster it is for others.';
+  @override final howItWorks = 'How it works';
+  @override final myFiles = 'My files';
+  @override final noPublished = 'No files shared yet. Tap + to share.';
+  @override final fromPeers = 'From others';
+  @override final noAvailable = 'No files shared by others yet.';
+  @override final publishFile = 'Share a file';
 }
 
 class _Zh implements _Strings {
@@ -352,14 +358,17 @@ class _Zh implements _Strings {
   @override final groupEncrypted = '群消息已加密';
   @override final leaveGroup = '退出群聊';
   @override final leaveGroupConfirm = '退出后就收不到这个群的消息了。';
-  @override final ptt = '对讲机';
-  @override final selectPeer = '选个人';
-  @override final selectPeerAbove = '先选上面的人';
-  @override final holdToTalk = '按住说话';
-  @override final releaseToStop = '松开发送';
-  @override final transmitting = '正在说话…';
-  @override final receivingFrom = '收到语音来自';
-  @override final micPermissionRequired = '需要允许使用麦克风';
+  @override final notifications = '消息通知';
+  @override final notificationsDesc = '收到消息时提醒你';
+  @override final backgroundMode = '后台运行';
+  @override final distributedWeb = '共享文件';
+  @override final distributedWebDesc = '和附近的人直接分享文件。文件会存在每个下载过的人的手机上——下载的人越多，别人获取越快。';
+  @override final howItWorks = '使用方法';
+  @override final myFiles = '我的文件';
+  @override final noPublished = '还没有分享文件。点右下角的 + 分享。';
+  @override final fromPeers = '别人分享的';
+  @override final noAvailable = '还没有人分享文件。';
+  @override final publishFile = '分享文件';
 }
 
 /// Localization delegate.

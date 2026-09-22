@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -32,6 +33,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   String status = 'Available';
   bool onboarded = false;
   bool running = false;
+  bool notificationsEnabled = true;
+  String bgMode = 'notification'; // 'notification', 'music', 'none'
   List<Peer> peers = [];
   DateTime? _lastResume;
 
@@ -51,6 +54,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     displayName = prefs.getString('name') ?? '';
     status = prefs.getString('status') ?? 'Available';
     onboarded = prefs.getBool('onboarded') ?? false;
+    notificationsEnabled = prefs.getBool('notifications') ?? true;
+    bgMode = prefs.getString('bg_mode') ?? 'notification';
 
     // Load device
     final devId = await store.getKv('device_id');
@@ -406,6 +411,27 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> refreshChats() async => _refreshChats();
+
+  Future<void> setNotifications(bool enabled) async {
+    notificationsEnabled = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('notifications', enabled);
+    notifyListeners();
+  }
+
+  Future<void> setBgMode(String mode) async {
+    bgMode = mode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('bg_mode', mode);
+    if (Platform.isAndroid) {
+      if (mode == 'notification' || mode == 'music') {
+        await const MethodChannel('com.lantern/service').invokeMethod('startService');
+      } else {
+        await const MethodChannel('com.lantern/service').invokeMethod('stopService');
+      }
+    }
+    notifyListeners();
+  }
 
   List<ChatSummary> _chats = [];
   List<ChatSummary> get chats => _chats;

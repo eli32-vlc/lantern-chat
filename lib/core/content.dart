@@ -15,6 +15,7 @@ class Content {
   final Mesh mesh;
   final Store store;
   String? _basePath;
+  void Function()? onChanged;
 
   Content({required this.mesh, required this.store});
 
@@ -49,6 +50,7 @@ class Content {
     });
     _announce();
     DiagLog.add('content', 'published $hash');
+    onChanged?.call();
     return hash;
   }
 
@@ -206,6 +208,20 @@ class Content {
   Future<void> delete(String hash) async {
     await store.deleteContent(hash);
     try { await File('$_basePath/$hash').delete(); } catch (_) {}
+    onChanged?.call();
+  }
+
+  Future<List<Map<String, dynamic>>> listPublished() async {
+    final all = await store.allContent();
+    return all.where((r) => (r['is_pinned'] as int? ?? 0) == 1).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> listAvailable() async {
+    final all = await store.allContent();
+    return all.where((r) {
+      final localPath = r['local_path'] as String? ?? '';
+      return localPath.isEmpty;
+    }).toList();
   }
 
   String _guessMime(String name) {
