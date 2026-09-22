@@ -284,21 +284,21 @@ class Mesh {
   }
 
   Future<Socket?> dial(Peer peer) async {
-    final cached = _sockets[peer.id];
+    final cached = sockets[peer.id];
     if (cached != null) {
       try {
         await cached.done.timeout(Duration.zero);
-        if (_sockets[peer.id] == cached) sockets.remove(peer.id);
+        if (sockets[peer.id] == cached) sockets.remove(peer.id);
       } on TimeoutException {
         return cached;
       } catch (_) {
-        if (_sockets[peer.id] == cached) sockets.remove(peer.id);
+        if (sockets[peer.id] == cached) sockets.remove(peer.id);
       }
     }
     try {
       final sock = await Socket.connect(peer.host, peer.port,
           timeout: const Duration(seconds: 5));
-      _sockets[peer.id] = sock;
+      sockets[peer.id] = sock;
       final reader = FrameReader();
       sock.listen(
         (chunk) {
@@ -337,14 +337,14 @@ class Mesh {
       hello['aid'] = _account!.id;
       hello['spk'] = await _account!.pubB64;
     }
-    sock.add(_encode(hello));
+    sock.add(encode(hello));
   }
 
   Future<void> sendFrame(Peer peer, Map<String, dynamic> frame) async {
     final sock = await dial(peer);
     if (sock == null) return;
     try {
-      sock.add(_encode(frame));
+      sock.add(encode(frame));
       await sock.flush();
     } catch (_) {
       sockets.remove(peer.id);
@@ -438,7 +438,7 @@ class Mesh {
         if (!_doneHandled.contains(e.value)) {
           _doneHandled.add(e.value);
           e.value.done.then((_) {
-            if (_sockets[e.key] == e.value) sockets.remove(e.key);
+            if (sockets[e.key] == e.value) sockets.remove(e.key);
             helloReplied.remove(e.value);
             _doneHandled.remove(e.value);
           }).catchError((_) { _doneHandled.remove(e.value); });

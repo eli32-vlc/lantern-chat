@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:record/record.dart';
 
 import '../core/app_state.dart';
-import '../core/messages.dart';
 import '../core/mesh.dart';
 import '../core/protocol.dart';
 import 'l10n.dart';

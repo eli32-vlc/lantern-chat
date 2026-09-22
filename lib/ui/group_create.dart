@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../core/app_state.dart';
-import '../core/store.dart';
 import 'l10n.dart';
 
 class GroupCreateScreen extends StatefulWidget {

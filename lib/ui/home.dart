@@ -2,7 +2,6 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
-import '../core/protocol.dart';
 import 'chat.dart';
 import 'group_chat.dart';
 import 'l10n.dart';
@@ -10,7 +9,6 @@ import 'onboarding.dart';
 import 'people.dart';
 import 'me.dart';
 import 'ptt.dart';
-import 'theme.dart';
 
 class HomeShell extends StatefulWidget {
   final AppState state;

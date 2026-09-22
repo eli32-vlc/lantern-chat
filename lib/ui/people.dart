@@ -1,11 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
-import '../core/protocol.dart';
-import '../core/store.dart';
 import 'group_create.dart';
 import 'l10n.dart';
-import 'theme.dart';
 
 /// People tab — peers + groups + content in one list.
 class PeopleTab extends StatefulWidget {

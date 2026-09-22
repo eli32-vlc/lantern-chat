@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
 import 'l10n.dart';
-import 'theme.dart';
 
 /// 1:1 chat screen.
 class ChatPage extends StatefulWidget {
