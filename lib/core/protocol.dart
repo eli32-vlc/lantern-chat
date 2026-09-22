@@ -22,6 +22,16 @@ class LanternProtocol {
   static const txtHandle = 'ah'; // cryptographic short handle, e.g. '#AB3K-7MPR'
   static const txtAccountId = 'aid'; // account UUID (shared across devices)
   static const txtVer = 'v';
+  static const txtUdpPort = 'up'; // UDP port for fast payload delivery
+
+  // UDP transport constants
+  static const udpMaxPayload = 1400; // max payload per UDP packet (fits in MTU)
+  static const udpTypeData = 0x01; // encrypted payload
+  static const udpTypeAck = 0x02; // delivery acknowledgment
+  static const udpMaxRetries = 10; // retry attempts before TCP fallback
+  static const udpRetryMs = 300; // ms between retries
+  // UDP header: [msgId 4B][type 1B][length 2B] = 7 bytes
+  static const udpHeaderSize = 7;
 
   // Group protocol frame types
   static const frameGroupInvite = 'group_invite';

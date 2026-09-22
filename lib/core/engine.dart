@@ -21,7 +21,8 @@ class LanPeer {
   final String accountId; // account UUID (shared across devices)
   final String status;
   final String host;
-  final int port;
+  final int port; // TCP port
+  final int udpPort; // UDP port for fast payload delivery
   final String pubB64;
   final int version;
   DateTime lastSeen;
@@ -34,6 +35,7 @@ class LanPeer {
     required this.status,
     required this.host,
     required this.port,
+    this.udpPort = 0,
     required this.pubB64,
     required this.version,
   }) : lastSeen = DateTime.now();
@@ -77,6 +79,8 @@ class LanEngine {
   Registration? _regAirchat; // AirChat compat mDNS registration
   Discovery? _discovery;
   Timer? _prune;
+  RawDatagramSocket? _udpSocket;
+  int _udpPort = 0;
 
   final _peers = <String, LanPeer>{};
   final _peerCtrl = StreamController<List<LanPeer>>.broadcast();
@@ -96,6 +100,8 @@ class LanEngine {
   final _syncing = <String>{};
   /// Sync cooldown: peerId → last sync start time.
   final _syncCooldown = <String, DateTime>{};
+  /// Pending UDP acks: msgId -> pending info.
+  final _pendingUdpAcks = <String, _UdpPendingAck>{};
 
   Stream<List<LanPeer>> get peers => _peerCtrl.stream;
   Stream<LanEvent> get events => _eventCtrl.stream;
@@ -122,6 +128,7 @@ class LanEngine {
         if (account != null) ...{
           LanternProtocol.txtAccountId: _txtBytes(account!.id),
         },
+        LanternProtocol.txtUdpPort: _txtBytes('$_udpPort'),
         LanternProtocol.txtVer: _txtBytes('${LanternProtocol.protoVersion}'),
       };
 
@@ -141,6 +148,18 @@ class LanEngine {
           backlog: LanternProtocol.tcpBacklog);
       DiagLog.add('engine', 'listening on port $port');
       _server!.listen(_onInbound);
+
+      // Bind UDP socket for fast payload delivery (send-wait-ack).
+      // UDP port = TCP port +1 for easy discovery.
+      try {
+        _udpSocket = await RawDatagramSocket.bind(
+            InternetAddress.anyIPv4, port + 1);
+        _udpPort = _udpSocket!.port;
+        _udpSocket!.listen(_onUdpDatagram);
+        DiagLog.add('udp', 'listening on port $_udpPort');
+      } catch (e) {
+        DiagLog.add('udp', 'bind failed: $e (TCP-only mode)');
+      }
 
       // Register on BOTH _lantern._tcp (our native protocol) and _airchat._tcp
       // so AirChat can discover us as a peer on the LAN.
@@ -269,6 +288,9 @@ class LanEngine {
         status: _txtString(txt[LanternProtocol.txtStatus]),
         host: host,
         port: port,
+        udpPort: int.tryParse(
+                _txtString(txt[LanternProtocol.txtUdpPort])) ??
+            0,
         pubB64: _txtString(txt[LanternProtocol.txtPub]),
         version:
             int.tryParse(_txtString(txt[LanternProtocol.txtVer])) ?? 1,
@@ -750,12 +772,75 @@ class LanEngine {
   }
 
   /// Send an encrypted payload to a peer. Requires trusted pin.
+  /// Tries UDP first for small payloads (fast, no TCP slow start).
+  /// Falls back to TCP for large payloads or if UDP fails.
   Future<bool> sendTo(LanPeer peer, Map<String, dynamic> payload) async {
     final known = await store.getPeer(peer.id);
     if (known == null || !known.trusted) return false;
     final key = await _sessionFor(peer.id, known.pubB64);
     if (key == null) return false;
     final sealed = await PayloadBox.seal(key, payload);
+    final msgId = payload['id'] as String?;
+
+    // Try UDP for small payloads if peer has a UDP port
+    if (peer.udpPort > 0 &&
+        sealed.length <= LanternProtocol.udpMaxPayload &&
+        msgId != null &&
+        _udpSocket != null) {
+      DiagLog.add('udp',
+          'send $msgId ${sealed.length}B to ${peer.host}:${peer.udpPort}');
+      return _sendUdp(peer, sealed, msgId);
+    }
+
+    // Fall back to TCP
+    return _sendTcp(peer, sealed, msgId);
+  }
+
+  /// Send via UDP with application-level ACK/retry.
+  Future<bool> _sendUdp(
+      LanPeer peer, Uint8List sealed, String msgId) async {
+    final addr = InternetAddress(peer.host);
+    final port = peer.udpPort;
+    // Build packet: [msgId 4B][type 1B][length 2B][payload]
+    final header = _udpHeader(
+        msgId, LanternProtocol.udpTypeData, sealed.length);
+    final packet = Uint8List.fromList([...header, ...sealed]);
+
+    _udpSocket!.send(packet, addr, port);
+
+    // Start ACK wait with retries
+    final pending = _UdpPendingAck(
+      msgId: msgId,
+      addr: addr,
+      port: port,
+      data: packet,
+      attempts: 1,
+    );
+    pending.retryTimer = Timer.periodic(
+      const Duration(milliseconds: LanternProtocol.udpRetryMs),
+      (_) {
+        if (pending.attempts >= LanternProtocol.udpMaxRetries) {
+          DiagLog.add('udp',
+              'max retries for $msgId, falling back to TCP');
+          _pendingUdpAcks.remove(msgId);
+          pending.retryTimer?.cancel();
+          // Fall back to TCP
+          _sendTcp(peer, sealed, msgId);
+          return;
+        }
+        _udpSocket!.send(pending.data, pending.addr, pending.port);
+        pending.attempts++;
+        DiagLog.add(
+            'udp', 'retry $msgId attempt ${pending.attempts}');
+      },
+    );
+    _pendingUdpAcks[msgId] = pending;
+    return true; // optimistic; ACK will confirm delivery
+  }
+
+  /// Send via TCP (existing path).
+  Future<bool> _sendTcp(
+      LanPeer peer, Uint8List sealed, String? msgId) async {
     final frame = LanternProtocol.encodeFrame({
       't': 'payload',
       'from': me.id,
@@ -766,8 +851,6 @@ class LanEngine {
     try {
       sock.add(frame);
       await sock.flush();
-      // Track for delivery ack (timeout after 30s).
-      final msgId = payload['id'] as String?;
       if (msgId != null) {
         _pendingAcks[msgId] = DateTime.now();
       }
@@ -775,6 +858,116 @@ class LanEngine {
     } catch (_) {
       _sockets.remove(peer.id);
       return false;
+    }
+  }
+
+  /// Build UDP packet header: [msgId 4B][type 1B][length 2B].
+  List<int> _udpHeader(String msgId, int type, int length) {
+    final idBytes = utf8.encode(msgId.substring(0, 4.clamp(0, msgId.length)));
+    return [
+      ...idBytes,
+      type,
+      (length >> 8) & 0xFF,
+      length & 0xFF,
+    ];
+  }
+
+  /// Build a UDP ACK packet.
+  List<int> _udpAck(String msgId) {
+    return _udpHeader(msgId, LanternProtocol.udpTypeAck, 0);
+  }
+
+  /// Handle incoming UDP datagram.
+  void _onUdpDatagram(RawSocketEvent event) {
+    if (event != RawSocketEvent.readMore) return;
+    final dg = _udpSocket!.receive();
+    if (dg == null) return;
+    final data = dg.data;
+    if (data.length < LanternProtocol.udpHeaderSize) return;
+
+    // Parse header: [msgId 4B][type 1B][length 2B]
+    final msgIdRaw = data.sublist(0, 4);
+    final msgId = utf8.decode(msgIdRaw, allowMalformed: true);
+    final type = data[4];
+    final payloadLen = (data[5] << 8) | data[6];
+
+    if (type == LanternProtocol.udpTypeAck) {
+      // ACK received — cancel retry timer, mark delivered
+      final pending = _pendingUdpAcks.remove(msgId);
+      pending?.retryTimer?.cancel();
+      // Find the full msgId from pending (we only sent 4 bytes)
+      if (pending != null) {
+        store.db.update('messages', {'delivered': 1},
+            where: 'id = ?', whereArgs: [pending.msgId]);
+        DiagLog.add('udp', 'ACK received for ${pending.msgId}');
+      }
+      return;
+    }
+
+    if (type == LanternProtocol.udpTypeData) {
+      if (data.length < LanternProtocol.udpHeaderSize + payloadLen) return;
+      final payload =
+          data.sublist(LanternProtocol.udpHeaderSize,
+              LanternProtocol.udpHeaderSize + payloadLen);
+
+      // Send ACK back immediately
+      _udpSocket!.send(
+          Uint8List.fromList(_udpAck(msgId)),
+          dg.address,
+          dg.port);
+      DiagLog.add('udp',
+          'DATA received from ${dg.address.address}, ACK sent');
+
+      // Process the payload (same as TCP payload handler)
+      _processPayload(payload, dg.address.address);
+    }
+  }
+
+  /// Process an encrypted payload (shared by TCP and UDP paths).
+  Future<void> _processPayload(
+      List<int> sealed, String senderHost) async {
+    // We need to find who sent this. For UDP, we only have the IP.
+    // Look up the peer by IP address.
+    String? from;
+    for (final entry in _sockets.entries) {
+      // Check if any known socket matches this IP
+      try {
+        if (entry.value.remoteAddress.address == senderHost) {
+          from = entry.key;
+          break;
+        }
+      } catch (_) {}
+    }
+    // Also check live peers by IP
+    if (from == null) {
+      for (final p in _peers.values) {
+        if (p.host == senderHost) {
+          from = p.id;
+          break;
+        }
+      }
+    }
+    if (from == null) {
+      DiagLog.add('udp', 'unknown sender $senderHost, dropping');
+      return;
+    }
+
+    final known = await store.getPeer(from);
+    if (known == null || !known.trusted || known.pubB64.isEmpty) {
+      DiagLog.add('udp', 'untrusted sender $from, dropping');
+      return;
+    }
+    final key = await _sessionFor(from, known.pubB64);
+    if (key == null) return;
+
+    try {
+      final plain =
+          await PayloadBox.open(key, Uint8List.fromList(sealed));
+      if (!_eventCtrl.isClosed) {
+        _eventCtrl.add(LanEvent(from, plain));
+      }
+    } catch (e) {
+      DiagLog.add('udp', 'decrypt failed: $e');
     }
   }
 
@@ -893,6 +1086,17 @@ class LanEngine {
     _prune = null;
     _ackTimer?.cancel();
     _ackTimer = null;
+    // Cancel all pending UDP acks
+    for (final pending in _pendingUdpAcks.values) {
+      pending.retryTimer?.cancel();
+    }
+    _pendingUdpAcks.clear();
+    // Close UDP socket
+    try {
+      _udpSocket?.close();
+    } catch (_) {}
+    _udpSocket = null;
+    _udpPort = 0;
     if (_discovery != null) {
       try {
         await stopDiscovery(_discovery!);
@@ -933,4 +1137,22 @@ class LanEngine {
     _eventCtrl.close();
     _pendingTrust.close();
   }
+}
+
+/// Tracks a pending UDP message waiting for ACK.
+class _UdpPendingAck {
+  final String msgId;
+  final InternetAddress addr;
+  final int port;
+  final Uint8List data;
+  int attempts;
+  Timer? retryTimer;
+
+  _UdpPendingAck({
+    required this.msgId,
+    required this.addr,
+    required this.port,
+    required this.data,
+    required this.attempts,
+  });
 }
