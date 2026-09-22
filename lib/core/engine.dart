@@ -801,10 +801,7 @@ class LanEngine {
       LanPeer peer, Uint8List sealed, String msgId) async {
     final addr = InternetAddress(peer.host);
     final port = peer.udpPort;
-    // Build packet: [msgId 4B][type 1B][length 2B][payload]
-    final header = _udpHeader(
-        msgId, LanternProtocol.udpTypeData, sealed.length);
-    final packet = Uint8List.fromList([...header, ...sealed]);
+    final packet = _buildUdpData(msgId, sealed);
 
     _udpSocket!.send(packet, addr, port);
 
@@ -824,7 +821,6 @@ class LanEngine {
               'max retries for $msgId, falling back to TCP');
           _pendingUdpAcks.remove(msgId);
           pending.retryTimer?.cancel();
-          // Fall back to TCP
           _sendTcp(peer, sealed, msgId);
           return;
         }
@@ -835,7 +831,7 @@ class LanEngine {
       },
     );
     _pendingUdpAcks[msgId] = pending;
-    return true; // optimistic; ACK will confirm delivery
+    return true;
   }
 
   /// Send via TCP (existing path).
@@ -861,20 +857,38 @@ class LanEngine {
     }
   }
 
-  /// Build UDP packet header: [msgId 4B][type 1B][length 2B].
-  List<int> _udpHeader(String msgId, int type, int length) {
-    final idBytes = utf8.encode(msgId.substring(0, 4.clamp(0, msgId.length)));
-    return [
-      ...idBytes,
-      type,
-      (length >> 8) & 0xFF,
-      length & 0xFF,
-    ];
+  /// Build UDP data packet: [msgIdLen 1B][msgId NB][type 1B][len 2B][payload].
+  Uint8List _buildUdpData(String msgId, Uint8List payload) {
+    final idBytes = utf8.encode(msgId);
+    final out = BytesBuilder();
+    out.add([idBytes.length]);
+    out.add(idBytes);
+    out.add([LanternProtocol.udpTypeData]);
+    out.add([(payload.length >> 8) & 0xFF, payload.length & 0xFF]);
+    out.add(payload);
+    return out.toBytes();
   }
 
-  /// Build a UDP ACK packet.
-  List<int> _udpAck(String msgId) {
-    return _udpHeader(msgId, LanternProtocol.udpTypeAck, 0);
+  /// Build UDP ACK packet: [msgIdLen 1B][msgId NB][type 1B][0,0].
+  Uint8List _buildUdpAck(String msgId) {
+    final idBytes = utf8.encode(msgId);
+    final out = BytesBuilder();
+    out.add([idBytes.length]);
+    out.add(idBytes);
+    out.add([LanternProtocol.udpTypeAck, 0, 0]);
+    return out.toBytes();
+  }
+
+  /// Parse UDP packet header, returns (msgId, type, payloadStartOffset).
+  /// Returns null if packet is too short.
+  (String, int, int)? _parseUdpHeader(List<int> data) {
+    if (data.length < 4) return null;
+    final idLen = data[0];
+    if (data.length < 1 + idLen + 3) return null;
+    final msgId = utf8.decode(data.sublist(1, 1 + idLen), allowMalformed: true);
+    final type = data[1 + idLen];
+    final offset = 1 + idLen + 3; // after [len][id][type][payloadLen 2B]
+    return (msgId, type, offset);
   }
 
   /// Handle incoming UDP datagram.
@@ -883,19 +897,15 @@ class LanEngine {
     final dg = _udpSocket!.receive();
     if (dg == null) return;
     final data = dg.data;
-    if (data.length < LanternProtocol.udpHeaderSize) return;
 
-    // Parse header: [msgId 4B][type 1B][length 2B]
-    final msgIdRaw = data.sublist(0, 4);
-    final msgId = utf8.decode(msgIdRaw, allowMalformed: true);
-    final type = data[4];
-    final payloadLen = (data[5] << 8) | data[6];
+    final parsed = _parseUdpHeader(data);
+    if (parsed == null) return;
+    final (msgId, type, payloadOffset) = parsed;
 
     if (type == LanternProtocol.udpTypeAck) {
       // ACK received — cancel retry timer, mark delivered
       final pending = _pendingUdpAcks.remove(msgId);
       pending?.retryTimer?.cancel();
-      // Find the full msgId from pending (we only sent 4 bytes)
       if (pending != null) {
         store.db.update('messages', {'delivered': 1},
             where: 'id = ?', whereArgs: [pending.msgId]);
@@ -905,20 +915,20 @@ class LanEngine {
     }
 
     if (type == LanternProtocol.udpTypeData) {
-      if (data.length < LanternProtocol.udpHeaderSize + payloadLen) return;
-      final payload =
-          data.sublist(LanternProtocol.udpHeaderSize,
-              LanternProtocol.udpHeaderSize + payloadLen);
+      final payloadLen =
+          (data[payloadOffset - 2] << 8) | data[payloadOffset - 1];
+      if (data.length < payloadOffset + payloadLen) return;
+      final payload = data.sublist(payloadOffset, payloadOffset + payloadLen);
 
       // Send ACK back immediately
       _udpSocket!.send(
-          Uint8List.fromList(_udpAck(msgId)),
+          Uint8List.fromList(_buildUdpAck(msgId)),
           dg.address,
           dg.port);
       DiagLog.add('udp',
           'DATA received from ${dg.address.address}, ACK sent');
 
-      // Process the payload (same as TCP payload handler)
+      // Process the payload
       _processPayload(payload, dg.address.address);
     }
   }

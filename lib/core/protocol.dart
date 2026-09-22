@@ -25,13 +25,13 @@ class LanternProtocol {
   static const txtUdpPort = 'up'; // UDP port for fast payload delivery
 
   // UDP transport constants
+  // UDP header: [msgIdLen 1B][msgId NB][type 1B][length 2B]
+  // msgId is full UUID (36 bytes), not truncated.
   static const udpMaxPayload = 1400; // max payload per UDP packet (fits in MTU)
   static const udpTypeData = 0x01; // encrypted payload
   static const udpTypeAck = 0x02; // delivery acknowledgment
   static const udpMaxRetries = 10; // retry attempts before TCP fallback
   static const udpRetryMs = 300; // ms between retries
-  // UDP header: [msgId 4B][type 1B][length 2B] = 7 bytes
-  static const udpHeaderSize = 7;
 
   // Group protocol frame types
   static const frameGroupInvite = 'group_invite';
