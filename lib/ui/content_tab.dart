@@ -198,7 +198,7 @@ class _ContentTabState extends State<ContentTab> {
     );
   }
 
-  void _preview(Map<String, dynamic> item) {
+  Future<void> _preview(Map<String, dynamic> item) async {
     final hash = item['hash'] as String? ?? '';
     final name = item['name'] as String? ?? 'Unknown';
     final mime = item['mime_type'] as String? ?? '';
@@ -269,7 +269,6 @@ class _ContentTabState extends State<ContentTab> {
             ),
           ),
         );
-      );
     } else {
       showDialog(
         context: context,
