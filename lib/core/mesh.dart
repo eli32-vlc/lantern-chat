@@ -87,6 +87,9 @@ class Mesh {
   int get port => _server?.port ?? 0;
   int get udpPort => _udpPort;
 
+  /// Set handle (call before start, or after account change).
+  void setHandle(String h) { _handle = h; }
+
   // ---- Lifecycle ----
 
   Future<void> start() async {
@@ -172,13 +175,15 @@ class Mesh {
 
   // ---- mDNS ----
 
+  String _handle = '';
+
   Future<Map<String, Uint8List?>> _txt() async => {
     P.txtId: _b(device.id),
     P.txtName: _b(displayName),
     P.txtStatus: _b(status),
     P.txtPort: _b('$port'),
     P.txtPub: _b(await device.pubB64),
-    P.txtHandle: _b(''),  // set by caller
+    P.txtHandle: _b(_handle),
     P.txtVer: _b('${P.protoVersion}'),
     P.txtAppVer: _b(P.appVersion),
     P.txtAppBuild: _b('${P.appBuild}'),
@@ -312,8 +317,12 @@ class Mesh {
     }
   }
 
+  Account? _account;
+
+  void setAccount(Account? acc) { _account = acc; }
+
   Future<void> _sendHello(Socket sock) async {
-    sock.add(_encode({
+    final hello = <String, dynamic>{
       't': P.hello,
       'id': device.id,
       'nm': displayName,
@@ -321,7 +330,13 @@ class Mesh {
       'v': P.protoVersion,
       'av': P.appVersion,
       'ab': P.appBuild,
-    }));
+    };
+    if (_account != null) {
+      hello['ah'] = await _account!.handle;
+      hello['aid'] = _account!.id;
+      hello['spk'] = await _account!.pubB64;
+    }
+    sock.add(_encode(hello));
   }
 
   Future<void> sendFrame(Peer peer, Map<String, dynamic> frame) async {
@@ -384,7 +399,7 @@ class Mesh {
     return key;
   }
 
-  void cacheSession(String peerId, List<int> pubBytes) async {
+  Future<void> cacheSession(String peerId, List<int> pubBytes) async {
     _sessions[peerId] = await device.sharedWith(pubBytes);
   }
 
@@ -393,8 +408,26 @@ class Mesh {
   void _prunePeers() {
     final cutoff =
         DateTime.now().subtract(Duration(minutes: P.peerPruneMinutes));
-    _peers.removeWhere((_, p) => p.lastSeen.isBefore(cutoff));
+    final dead = <String>[];
+    _peers.forEach((_, p) { if (p.lastSeen.isBefore(cutoff)) dead.add(p.id); });
+    for (final id in dead) {
+      _peers.removeWhere((_, p) => p.id == id);
+    }
     if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
+  }
+
+  /// Re-register mDNS (call after name/status change).
+  Future<void> reregister() async {
+    try { if (_reg != null) await unregister(_reg!); } catch (_) {}
+    _reg = null;
+    try {
+      _reg = await register(Service(
+        name: '${P.namePrefix}${device.id.substring(0, 8)}',
+        type: P.serviceType,
+        port: port,
+        txt: await _txt(),
+      ));
+    } catch (_) {}
   }
 
   void _checkHealth() {
@@ -409,7 +442,7 @@ class Mesh {
             _doneHandled.remove(e.value);
           }).catchError((_) { _doneHandled.remove(e.value); });
         }
-        e.value.add(Uint8List(0));
+        // H5: Don't send zero-byte writes — rely on done.future instead
       } catch (_) {
         dead.add(e.key);
       }

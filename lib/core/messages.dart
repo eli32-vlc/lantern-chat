@@ -44,34 +44,27 @@ class Messages {
     final key = await mesh.sessionFor(peer.id, known['pub'] as String);
     if (key == null) return false;
 
-    // Sign the payload
-    String? sig;
+    final sealed = await Crypto.seal(key, payload);
+    final frame = <String, dynamic>{
+      't': P.payload, 'from': mesh.device.id,
+      'blob': base64Encode(sealed),
+    };
     if (account != null) {
-      final sealed = await Crypto.seal(key, payload);
-      sig = base64Encode(await account!.sign(sealed));
-      final frame = {
-        't': P.payload, 'from': mesh.device.id,
-        'blob': base64Encode(sealed),
-        'sig': sig, 'sign_pub': await account!.pubB64,
-      };
-      return _sendFrame(peer, frame, payload['id'] as String?, sealed);
-    } else {
-      final sealed = await Crypto.seal(key, payload);
-      final frame = {
-        't': P.payload, 'from': mesh.device.id,
-        'blob': base64Encode(sealed),
-      };
-      return _sendFrame(peer, frame, payload['id'] as String?, sealed);
+      frame['sig'] = base64Encode(await account!.sign(sealed));
+      frame['sign_pub'] = await account!.pubB64;
     }
+    return _sendFrame(peer, frame, payload['id'] as String?, payload);
   }
 
   Future<bool> _sendFrame(Peer peer, Map<String, dynamic> frame,
-      String? msgId, Uint8List sealed) async {
+      String? msgId, Map<String, dynamic> plainPayload) async {
     // Try UDP for small payloads
+    final sealed = base64Decode(frame['blob'] as String);
     if (peer.udpPort > 0 && sealed.length <= P.udpMaxPayload && msgId != null) {
       final ok = await _sendUdp(peer, sealed, msgId);
       if (!ok) {
-        await store.queueMessage(peer.id, jsonEncode({'queued': frame}));
+        // H4: Store plaintext for re-encryption on flush
+        await store.queueMessage(peer.id, jsonEncode({'queued': plainPayload}));
         DiagLog.add('queue', 'queued $msgId');
       }
       return ok;
@@ -79,16 +72,21 @@ class Messages {
     // TCP fallback
     final ok = await _sendTcp(peer, frame, msgId);
     if (!ok) {
-      await store.queueMessage(peer.id, jsonEncode({'queued': frame}));
+      // H4: Store plaintext for re-encryption on flush
+      await store.queueMessage(peer.id, jsonEncode({'queued': plainPayload}));
       DiagLog.add('queue', 'queued $msgId');
     }
     return ok;
   }
 
   Future<bool> _sendTcp(Peer peer, Map<String, dynamic> frame, String? msgId) async {
-    await mesh.sendFrame(peer, frame);
-    if (msgId != null) _pendingAck[msgId] = DateTime.now();
-    return true;
+    try {
+      await mesh.sendFrame(peer, frame);
+      if (msgId != null) _pendingAck[msgId] = DateTime.now();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<bool> _sendUdp(Peer peer, Uint8List sealed, String msgId) async {
@@ -222,24 +220,34 @@ class Messages {
     final pk = json['pk'] as String? ?? '';
     if (id.isEmpty || pk.isEmpty || id == mesh.device.id) return;
 
+    // H10: Reject incompatible protocol versions
+    final peerVer = json['v'] as int? ?? 0;
+    if (peerVer > P.protoVersion) return;
+
     // Reply hello once per socket
     if (sock != null) {
       final last = mesh._helloReplied[sock];
       if (last == null || DateTime.now().difference(last) > Duration(seconds: 10)) {
         mesh._helloReplied[sock] = DateTime.now();
         try {
-          sock.add(Mesh._encode({
+          final hello = <String, dynamic>{
             't': P.hello, 'id': mesh.device.id,
             'nm': mesh.displayName, 'pk': await mesh.device.pubB64,
             'v': P.protoVersion, 'av': P.appVersion, 'ab': P.appBuild,
-          }));
+          };
+          if (account != null) {
+            hello['ah'] = await account!.handle;
+            hello['aid'] = account!.id;
+            hello['spk'] = await account!.pubB64;
+          }
+          sock.add(Mesh._encode(hello));
         } catch (_) {}
       }
     }
 
-    // Cache session key
+    // Cache session key (await to ensure it's ready for payloads)
     if (pk.isNotEmpty) {
-      try { mesh.cacheSession(id, base64Decode(pk)); } catch (_) {}
+      try { await mesh.cacheSession(id, base64Decode(pk)); } catch (_) {}
     }
 
     // Update peer in DB with hello info
@@ -269,14 +277,16 @@ class Messages {
     if (known == null || known['trusted'] != 1) return;
     if ((known['pub'] as String).isEmpty) return;
 
-    // Verify signature (mandatory)
-    if (sig != null && signPubB64 != null) {
-      final valid = await Account.verify(
-          base64Decode(blob), base64Decode(sig), base64Decode(signPubB64));
-      if (!valid) {
-        DiagLog.add('proto', 'BAD SIGNATURE from $from');
-        return;
-      }
+    // C5: Verify signature (mandatory — reject unsigned messages)
+    if (sig == null || signPubB64 == null) {
+      DiagLog.add('proto', 'UNSIGNED payload from $from — rejected');
+      return;
+    }
+    final valid = await Account.verify(
+        base64Decode(blob), base64Decode(sig), base64Decode(signPubB64));
+    if (!valid) {
+      DiagLog.add('proto', 'BAD SIGNATURE from $from');
+      return;
     }
 
     final key = await mesh.sessionFor(from, known['pub'] as String);
@@ -359,8 +369,12 @@ class Messages {
 
     for (final m in messages) {
       final row = m as Map<String, dynamic>;
+      final msgId = row['id'] as String;
       final chatId = row['chat_id'] as String;
       final senderId = row['sender_id'] as String;
+      // H2: Replay protection — skip already-seen messages
+      if (msgId.isNotEmpty && await store.isSeen(msgId)) continue;
+      if (msgId.isNotEmpty) await store.markSeen(msgId);
       // Ensure peer exists
       if (await store.getPeer(chatId) == null && chatId != mesh.device.id) {
         await store.upsertPeer({
@@ -400,8 +414,14 @@ class Messages {
       try {
         final json = jsonDecode(row['payload'] as String) as Map<String, dynamic>;
         if (json.containsKey('queued')) {
-          await mesh.sendFrame(peer, json['queued'] as Map<String, dynamic>);
-          await store.removeQueued(id);
+          // H4: Re-encrypt with current session key
+          final plain = json['queued'] as Map<String, dynamic>;
+          final ok = await send(peer, plain);
+          if (ok) {
+            await store.removeQueued(id);
+          } else {
+            await store.incrementQueueAttempt(id);
+          }
         }
       } catch (_) {
         await store.incrementQueueAttempt(id);

@@ -27,6 +27,7 @@ class _PttScreenState extends State<PttScreen> {
   String? _receivingFrom;
   final List<List<int>> _rxChunks = [];
   Timer? _presenceTimer;
+  StreamSubscription? _eventSub; // H8: Track for cleanup
 
   // Channel presence: channel -> set of peer IDs
   final Map<String, Set<String>> _presence = {};
@@ -43,7 +44,8 @@ class _PttScreenState extends State<PttScreen> {
   void _setupCallbacks() {
     final msgs = widget.state.msgs;
     if (msgs == null) return;
-    msgs.events.listen((e) {
+    // H8: Track subscription for cleanup
+    _eventSub = msgs.events.listen((e) {
       if (!mounted) return;
       if (e.type == 'ptt_start') {
         setState(() { _receiving = true; _receivingFrom = e.peerId; _rxChunks.clear(); });
@@ -83,6 +85,7 @@ class _PttScreenState extends State<PttScreen> {
   @override
   void dispose() {
     _presenceTimer?.cancel();
+    _eventSub?.cancel(); // H8: Cancel event subscription
     _recorder.dispose();
     super.dispose();
   }
@@ -119,17 +122,24 @@ class _PttScreenState extends State<PttScreen> {
 
   void _streamChunks(Peer peer, String path) async {
     int lastSize = 0;
+    int chunkCount = 0;
     while (_transmitting) {
-      await Future.delayed(Duration(milliseconds: 150));
+      await Future.delayed(Duration(milliseconds: 200)); // M6: Slower pace for 1Mbps links
       if (!_transmitting) break;
       try {
         final file = File(path);
         if (await file.exists()) {
-          final bytes = await file.readAsBytes();
-          if (bytes.length > lastSize) {
-            final chunk = bytes.sublist(lastSize);
-            lastSize = bytes.length;
+          // H9: Only read new bytes, not entire file
+          final size = await file.length();
+          if (size > lastSize) {
+            final raf = await file.open(mode: FileMode.read);
+            await raf.setPosition(lastSize);
+            final chunk = await raf.read(size - lastSize);
+            await raf.close();
+            lastSize = size;
+            // Split into UDP-safe pieces
             widget.state.msgs?.sendPttData(peer, chunk);
+            chunkCount++;
           }
         }
       } catch (_) {}

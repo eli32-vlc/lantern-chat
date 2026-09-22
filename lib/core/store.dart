@@ -120,7 +120,8 @@ class Store {
   }
 
   Future<void> _upgrade(Database db, int old, int now) async {
-    // All migrations handled by _create on version 1
+    // Recreate all tables on any version change
+    await _create(db, now);
   }
 
   // ---- KV ----
@@ -247,6 +248,16 @@ class Store {
     return db.query('groups', orderBy: 'created_at DESC');
   }
 
+  Future<List<Map<String, dynamic>>> myGroups() async {
+    final rows = await db.rawQuery('''
+      SELECT g.* FROM groups g
+      INNER JOIN group_members gm ON g.id = gm.group_id
+      GROUP BY g.id
+      ORDER BY g.created_at DESC
+    ''');
+    return rows;
+  }
+
   Future<void> addMember(String gid, String pid, {String role = 'member'}) async {
     await db.insert('group_members', {
       'group_id': gid, 'peer_id': pid, 'role': role,
@@ -312,8 +323,9 @@ class Store {
   }
 
   Future<List<Map<String, dynamic>>> searchContent(String q) async {
+    final esc = q.replaceAll('%', '\\%').replaceAll('_', '\\_');
     return db.query('content',
-        where: 'name LIKE ?', whereArgs: ['%$q%'],
+        where: 'name LIKE ?', whereArgs: ['%$esc%'],
         orderBy: 'published_at DESC');
   }
 

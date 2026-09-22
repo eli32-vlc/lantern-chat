@@ -100,7 +100,10 @@ class _QrImportScreenState extends State<QrImportScreen> {
   }
 
   Widget _scanner() => Column(children: [
-    Expanded(child: MobileScanner(onDetect: _onDetect)),
+    Expanded(child: MobileScanner(
+      onDetect: _onDetect,
+      onScannerStarted: (_) {},
+    )),
     Padding(padding: EdgeInsets.all(16), child: Text(S.of(context).pointCamera, style: TextStyle(color: Colors.grey))),
   ]);
 

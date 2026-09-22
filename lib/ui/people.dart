@@ -117,7 +117,7 @@ class _TrustSheet extends StatelessWidget {
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Text(peer.handle.isNotEmpty ? peer.handle : '…',
+              child: Text(peer.handle.isNotEmpty ? peer.handle : (peer.pubB64.isNotEmpty ? '${peer.pubB64.substring(0, 16)}…' : '…'),
                   style: TextStyle(fontSize: 24, fontFamily: 'monospace', letterSpacing: 1.2)),
             ),
             SizedBox(height: 16),

@@ -110,9 +110,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           if (!outgoing) FutureBuilder<Map<String, dynamic>?>(
             future: widget.state.store.getPeer(m['sender_id'] as String),
-            builder: (_, snap) => snap.data != null
-                ? Text(snap.data!['name'] as String? ?? '', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.primary))
-                : SizedBox.shrink(),
+            builder: (_, snap) {
+              final name = snap.data?['name'] as String? ?? '';
+              final handle = snap.data?['handle'] as String? ?? '';
+              final label = handle.isNotEmpty ? '$name $handle'.trim() : name;
+              return label.isNotEmpty
+                  ? Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.primary))
+                  : SizedBox.shrink();
+            },
           ),
           SelectableText(m['text'] ?? '', style: TextStyle(fontSize: 15)),
           SizedBox(height: 2),

@@ -48,7 +48,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     displayName = prefs.getString('name') ?? '';
     status = prefs.getString('status') ?? 'Available';
-    onboarded = prefs.getBool('onboarded') ?? displayName.isNotEmpty;
+    onboarded = prefs.getBool('onboarded') ?? false;
 
     // Load device
     final devId = await store.getKv('device_id');
@@ -90,18 +90,27 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       device: device!, store: store,
       displayName: displayName, status: status,
     );
+    // C2: Set handle and account on mesh
+    if (account != null) {
+      final h = await account!.handle;
+      mesh!.setHandle(h);
+    }
+    mesh!.setAccount(account);
     await mesh!.start();
 
     msgs = Messages(mesh: mesh!, store: store, account: account);
     msgs!.start();
-    msgs!.events.listen(_onEvent);
 
     groups = Groups(mesh: mesh!, store: store, account: account);
     content = Content(mesh: mesh!, store: store);
     await content!.init();
 
     running = true;
-    mesh!.peers.listen((p) { peers = p; notifyListeners(); });
+    // C3: Cancel old subscriptions before creating new ones
+    _peerSub?.cancel();
+    _evtSub?.cancel();
+    _peerSub = mesh!.peers.listen((p) { peers = p; notifyListeners(); });
+    _evtSub = msgs!.events.listen(_onEvent);
     peers = mesh!.currentPeers;
     notifyListeners();
   }
@@ -151,24 +160,27 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   void _onEvent(MsgEvent e) async {
     if (e.type == 'payload' && e.payload != null) {
-      final p = e.payload!;
-      final kind = p['kind'] as String? ?? 'text';
-      final msgId = p['id'] as String? ?? const Uuid().v4();
-      final ts = p['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch;
-      final gid = p['gid'] as String?;
-      final chatId = gid ?? e.peerId!;
+      try {
+        final p = e.payload!;
+        final kind = p['kind'] as String? ?? 'text';
+        final msgId = p['id'] as String? ?? const Uuid().v4();
+        final ts = p['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+        final gid = p['gid'] as String?;
+        final chatId = gid ?? e.peerId!;
 
-      await store.insertMessage({
-        'id': msgId, 'chat_id': chatId, 'sender_id': e.peerId!,
-        'kind': kind, 'text': p['text'],
-        'file_name': p['name'], 'file_bytes': p['bytes'],
-        'duration_ms': p['dur'], 'ts': ts,
-        'outgoing': 0, 'delivered': 0,
-      });
-      await _refreshChats();
-      notifyListeners();
+        await store.insertMessage({
+          'id': msgId, 'chat_id': chatId, 'sender_id': e.peerId!,
+          'kind': kind, 'text': p['text'],
+          'file_name': p['name'], 'file_bytes': p['bytes'],
+          'duration_ms': p['dur'], 'ts': ts,
+          'outgoing': 0, 'delivered': 0,
+        });
+        await _refreshChats();
+        notifyListeners();
+      } catch (err) {
+        DiagLog.add('event', 'error processing payload: $err');
+      }
     }
-    // Typing, PTT, etc. handled by UI via stream
   }
 
   // Send
@@ -237,6 +249,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<(String, String)> exportQr() async {
     if (account == null) throw StateError('No account');
     final seed = await account!.seed;
+    // M4: Direct JSON, no double encoding
     final plain = utf8.encode(jsonEncode({
       'account_id': account!.id,
       'sign_seed': base64Encode(seed),
@@ -355,10 +368,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     status = st;
     await prefs.setString('name', displayName);
     await prefs.setString('status', status);
-    // Re-register mDNS without full restart
+    // H6: Re-register mDNS with new name
     if (mesh != null) {
       mesh!.displayName = displayName;
       mesh!.status = status;
+      await mesh!.reregister();
     }
     notifyListeners();
   }
@@ -381,8 +395,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
+  Future<void> refreshChats() async => _refreshChats();
+
   List<ChatSummary> _chats = [];
   List<ChatSummary> get chats => _chats;
+
+  // C3: Track subscriptions for cleanup
+  StreamSubscription? _peerSub;
+  StreamSubscription? _evtSub;
 
   Future<void> _refreshChats() async {
     final peers = await store.allPeers();
@@ -412,8 +432,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       ));
     }
 
-    // Groups
-    final allGroups = await store.allGroups();
+    // Groups — only show groups we're members of
+    final allGroups = await store.myGroups();
     for (final g in allGroups) {
       final gid = g['id'] as String;
       if (seen.contains(gid)) continue;
@@ -425,9 +445,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         lastText = m['text'] as String? ?? m['kind'] as String;
         lastTs = m['ts'] as int;
       }
+      // H1: Group unread count
+      final unreadRows = await store.db.rawQuery(
+          'SELECT COUNT(*) c FROM messages WHERE chat_id = ? AND outgoing = 0 AND delivered = 0',
+          [gid]);
       out.add(ChatSummary(
         id: gid, name: '👥 ${g['name']}', handle: '',
-        lastText: lastText, lastTs: lastTs, unread: 0, isGroup: true,
+        lastText: lastText, lastTs: lastTs,
+        unread: (unreadRows.first['c'] as int?) ?? 0,
+        isGroup: true,
       ));
     }
 
@@ -439,6 +465,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _peerSub?.cancel();
+    _evtSub?.cancel();
     msgs?.stop();
     mesh?.dispose();
     super.dispose();

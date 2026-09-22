@@ -103,7 +103,7 @@ class ChatsTab extends StatelessWidget {
               ],
             ))
           : RefreshIndicator(
-              onRefresh: () async {},
+              onRefresh: () async { await state.refreshChats(); },
               child: ListView.separated(
                 itemCount: chats.length,
                 separatorBuilder: (_, __) => Divider(height: 1, indent: 72),
