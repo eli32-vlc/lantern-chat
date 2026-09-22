@@ -370,30 +370,35 @@ class LanEngine {
   void _onInbound(Socket sock) {
     DiagLog.add('tcp',
         'inbound from ${sock.remoteAddress.address}:${sock.remotePort}');
-    // Hand inbound sockets to the compat sniffer FIRST: if the first bytes
-    // are not Lantern framing, the compat server answers in plaintext
-    // (lines/ndjson/lenprefix) instead of dropping a "silent server".
-    CompatSniffer.route(sock, onLantern: (s) {
+    CompatSniffer.route(sock, onLantern: (rawSock, prefixBytes) {
+      DiagLog.add('tcp', 'onLantern: ${prefixBytes.length}B prefix');
       final reader = FrameReader();
-      s.listen((chunk) async {
+      // Replay prefix bytes (already read by sniffer) into the FrameReader.
+      for (final frame in reader.feed(Uint8List.fromList(prefixBytes))) {
+        DiagLog.add('tcp',
+            'prefix frame ${frame.length}B preview=${DiagLog.preview(frame, 120)}');
+        _onFrame(rawSock, null, frame);
+      }
+      // Now subscribe to the raw socket for subsequent data.
+      rawSock.listen((chunk) async {
         try {
           for (final frame in reader.feed(Uint8List.fromList(chunk))) {
             DiagLog.add('tcp',
                 'inbound frame ${frame.length}B preview=${DiagLog.preview(frame, 120)}');
-            await _onFrame(s, null, frame);
+            await _onFrame(rawSock, null, frame);
           }
         } catch (_) {
           try {
-            s.destroy();
+            rawSock.destroy();
           } catch (_) {}
         }
       }, onError: (_) {
         try {
-          s.destroy();
+          rawSock.destroy();
         } catch (_) {}
       }, onDone: () {
         try {
-          s.destroy();
+          rawSock.destroy();
         } catch (_) {}
       });
     });
@@ -474,6 +479,7 @@ class LanEngine {
       return;
     }
     final t = json['t'] as String?;
+    DiagLog.add('proto', 'frame t=$t from=$dialPeerId');
     if (t == 'hello') {
       final id = json['id'] as String? ?? '';
       final pk = json['pk'] as String? ?? '';

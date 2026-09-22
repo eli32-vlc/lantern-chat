@@ -37,7 +37,7 @@ class CompatSniffer {
   /// big-endian length whose value matches the remaining bytes and whose
   /// body parses as JSON with a String `t`. Anything else => compat.
   static void route(Socket sock,
-      {required void Function(Socket s) onLantern}) {
+      {required void Function(Socket sock, List<int> prefixBytes) onLantern}) {
     var done = false;
     late final StreamSubscription sub;
     final buf = BytesBuilder();
@@ -50,18 +50,17 @@ class CompatSniffer {
       unawaited(sub.cancel());
       if (_looksLikeLantern(bytes)) {
         DiagLog.add('compat', 'lantern framing — handing to E2EE engine');
-        onLantern(_PrefixSocket(sock, bytes));
+        onLantern(sock, bytes);
       } else {
         DiagLog.add('compat',
             'non-lantern framing preview=${DiagLog.preview(bytes, 160)} — compat session');
-        // ignore: unawaited_futures
         AirchatCompatServer.instance.serve(sock, prelude: bytes);
       }
     }, onError: (_) {
       if (!done) {
         done = true;
         unawaited(sub.cancel());
-        onLantern(sock);
+        onLantern(sock, buf.toBytes());
       }
     }, onDone: () {
       if (!done) {
@@ -71,13 +70,11 @@ class CompatSniffer {
         } catch (_) {}
       }
     });
-    // If the peer says nothing within 3s, assume Lantern (our dialer always
-    // greets immediately; silent inbound is usually our own hello pending).
     Timer(const Duration(seconds: 3), () {
       if (!done) {
         done = true;
         unawaited(sub.cancel());
-        onLantern(_PrefixSocket(sock, buf.toBytes()));
+        onLantern(sock, buf.toBytes());
       }
     });
   }
