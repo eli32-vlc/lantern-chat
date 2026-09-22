@@ -9,6 +9,7 @@ import 'l10n.dart';
 import 'onboarding.dart';
 import 'people.dart';
 import 'me.dart';
+import 'ptt.dart';
 import 'theme.dart';
 
 class HomeShell extends StatefulWidget {
@@ -43,6 +44,7 @@ class _HomeShellState extends State<HomeShell> {
             children: [
               ChatsTab(state: widget.state, onOpen: _openChat),
               PeopleTab(state: widget.state, onOpen: _openChat),
+              PttScreen(state: widget.state),
               MeTab(state: widget.state),
             ],
           ),
@@ -59,6 +61,11 @@ class _HomeShellState extends State<HomeShell> {
                 icon: Icon(Icons.people_outline),
                 selectedIcon: Icon(Icons.people),
                 label: S.of(context).people,
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.radio),
+                selectedIcon: Icon(Icons.radio),
+                label: S.of(context).ptt,
               ),
               NavigationDestination(
                 icon: Icon(Icons.person_outline),

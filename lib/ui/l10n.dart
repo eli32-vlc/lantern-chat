@@ -104,6 +104,14 @@ class S {
   String get groupEncrypted => _strings.groupEncrypted;
   String get leaveGroup => _strings.leaveGroup;
   String get leaveGroupConfirm => _strings.leaveGroupConfirm;
+  String get ptt => _strings.ptt;
+  String get selectPeer => _strings.selectPeer;
+  String get selectPeerAbove => _strings.selectPeerAbove;
+  String get holdToTalk => _strings.holdToTalk;
+  String get releaseToStop => _strings.releaseToStop;
+  String get transmitting => _strings.transmitting;
+  String get receivingFrom => _strings.receivingFrom;
+  String get micPermissionRequired => _strings.micPermissionRequired;
 }
 
 abstract class _Strings {
@@ -178,6 +186,14 @@ abstract class _Strings {
   String get groupEncrypted;
   String get leaveGroup;
   String get leaveGroupConfirm;
+  String get ptt;
+  String get selectPeer;
+  String get selectPeerAbove;
+  String get holdToTalk;
+  String get releaseToStop;
+  String get transmitting;
+  String get receivingFrom;
+  String get micPermissionRequired;
 }
 
 class _En implements _Strings {
@@ -253,6 +269,14 @@ class _En implements _Strings {
   @override final groupEncrypted = 'Group encrypted';
   @override final leaveGroup = 'Leave group';
   @override final leaveGroupConfirm = 'You will no longer receive messages from this group.';
+  @override final ptt = 'PTT';
+  @override final selectPeer = 'Select peer';
+  @override final selectPeerAbove = 'Select a peer above';
+  @override final holdToTalk = 'Hold to talk';
+  @override final releaseToStop = 'Release to stop';
+  @override final transmitting = 'Transmitting…';
+  @override final receivingFrom = 'Receiving from';
+  @override final micPermissionRequired = 'Microphone permission required';
 }
 
 class _Zh implements _Strings {
@@ -328,6 +352,14 @@ class _Zh implements _Strings {
   @override final groupEncrypted = '群组加密';
   @override final leaveGroup = '离开群组';
   @override final leaveGroupConfirm = '您将不再收到此群组的消息。';
+  @override final ptt = '对讲机';
+  @override final selectPeer = '选择联系人';
+  @override final selectPeerAbove = '请先选择上方的联系人';
+  @override final holdToTalk = '按住说话';
+  @override final releaseToStop = '松开停止';
+  @override final transmitting = '发送中…';
+  @override final receivingFrom = '接收来自';
+  @override final micPermissionRequired = '需要麦克风权限';
 }
 
 /// Localization delegate.

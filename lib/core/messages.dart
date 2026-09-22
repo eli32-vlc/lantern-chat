@@ -425,6 +425,31 @@ class Messages {
     mesh.sendUdp(peer, [P.udpTyping]);
   }
 
+  // ---- PTT ----
+
+  void sendPttStart(Peer peer, String channel) {
+    final chBytes = utf8.encode(channel);
+    mesh.sendUdp(peer, [P.udpPttStart, ...chBytes]);
+  }
+
+  void sendPttData(Peer peer, List<int> audioChunk) {
+    // Split into sub-1300 byte pieces to avoid UDP fragmentation
+    const maxChunk = 1300;
+    for (var i = 0; i < audioChunk.length; i += maxChunk) {
+      final end = (i + maxChunk).clamp(0, audioChunk.length);
+      mesh.sendUdp(peer, [P.udpPttData, ...audioChunk.sublist(i, end)]);
+    }
+  }
+
+  void sendPttStop(Peer peer) {
+    mesh.sendUdp(peer, [P.udpPttStop]);
+  }
+
+  void sendPttPresence(Peer peer, String channel) {
+    final chBytes = utf8.encode(channel);
+    mesh.sendUdp(peer, [P.udpPttPresence, ...chBytes]);
+  }
+
   // ---- Helpers ----
 
   void _checkAcks() {
