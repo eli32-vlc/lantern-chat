@@ -104,14 +104,17 @@ class S {
   String get groupEncrypted => _strings.groupEncrypted;
   String get leaveGroup => _strings.leaveGroup;
   String get leaveGroupConfirm => _strings.leaveGroupConfirm;
-  String get ptt => _strings.ptt;
-  String get selectPeer => _strings.selectPeer;
-  String get selectPeerAbove => _strings.selectPeerAbove;
-  String get holdToTalk => _strings.holdToTalk;
-  String get releaseToStop => _strings.releaseToStop;
-  String get transmitting => _strings.transmitting;
-  String get receivingFrom => _strings.receivingFrom;
-  String get micPermissionRequired => _strings.micPermissionRequired;
+  String get notifications => _strings.notifications;
+  String get notificationsDesc => _strings.notificationsDesc;
+  String get backgroundMode => _strings.backgroundMode;
+  String get distributedWeb => _strings.distributedWeb;
+  String get distributedWebDesc => _strings.distributedWebDesc;
+  String get howItWorks => _strings.howItWorks;
+  String get myFiles => _strings.myFiles;
+  String get noPublished => _strings.noPublished;
+  String get fromPeers => _strings.fromPeers;
+  String get noAvailable => _strings.noAvailable;
+  String get publishFile => _strings.publishFile;
 }
 
 abstract class _Strings {
