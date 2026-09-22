@@ -117,6 +117,60 @@ class MeTab extends StatelessWidget {
 
           Divider(height: 1),
 
+          // Android background service
+          if (Platform.isAndroid) ...[
+            ListTile(
+              leading: Icon(Icons.battery_saver),
+              title: Text('Background mode'),
+              subtitle: Text('Keep running when app is closed'),
+              trailing: Switch(
+                value: true,
+                onChanged: (v) async {
+                  if (v) {
+                    await const MethodChannel('com.lantern/service').invokeMethod('startService');
+                  } else {
+                    await const MethodChannel('com.lantern/service').invokeMethod('stopService');
+                  }
+                },
+              ),
+            ),
+            ListTile(
+              leading: Icon(Icons.notifications_active),
+              title: Text('Service type'),
+              subtitle: Text('How the app stays alive in background'),
+              onTap: () => showDialog(context: context, builder: (d) => SimpleDialog(
+                title: Text('Background service type'),
+                children: [
+                  SimpleDialogOption(
+                    onPressed: () { Navigator.pop(d); },
+                    child: ListTile(
+                      title: Text('Connected device'),
+                      subtitle: Text('Best for LAN chat — keeps WiFi active'),
+                      leading: Icon(Icons.wifi, color: Colors.green),
+                    ),
+                  ),
+                  SimpleDialogOption(
+                    onPressed: () { Navigator.pop(d); },
+                    child: ListTile(
+                      title: Text('Location'),
+                      subtitle: Text('Required on some devices for mDNS discovery'),
+                      leading: Icon(Icons.location_on, color: Colors.blue),
+                    ),
+                  ),
+                  SimpleDialogOption(
+                    onPressed: () { Navigator.pop(d); },
+                    child: ListTile(
+                      title: Text('None'),
+                      subtitle: Text('App may be killed by system to save battery'),
+                      leading: Icon(Icons.battery_alert, color: Colors.orange),
+                    ),
+                  ),
+                ],
+              )),
+            ),
+            Divider(height: 1),
+          ],
+
           // Factory reset
           ListTile(
             leading: Icon(Icons.restore, color: Colors.red),

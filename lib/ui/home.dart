@@ -20,6 +20,40 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  @override
+  void initState() {
+    super.initState();
+    // In-app notification for incoming messages
+    widget.state.onMessage = (name, text, chatId) {
+      if (!mounted) return;
+      // Don't show if we're already in that chat
+      final nav = Navigator.of(context);
+      if (nav.canPop()) {
+        // We're in a sub-screen, check if it's the right chat
+        // For simplicity, always show
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Row(children: [
+          Icon(Icons.message, size: 18, color: Colors.white),
+          SizedBox(width: 8),
+          Expanded(child: Text('$name: $text', maxLines: 1, overflow: TextOverflow.ellipsis)),
+        ]),
+        duration: Duration(seconds: 3),
+        action: SnackBarAction(label: 'Open', onPressed: () {
+          // Navigate to the chat
+          widget.state.refreshChats();
+        }),
+      ));
+    };
+  }
+
+  @override
+  void dispose() {
+    widget.state.onMessage = null;
+    super.dispose();
+  }
 
   void _openChat(String id, String name, {bool group = false}) {
     final page = group

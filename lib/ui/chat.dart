@@ -47,8 +47,12 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _reload() async {
     final msgs = await widget.state.store.messagesFor(widget.peerId, limit: 300);
     if (!mounted) return;
-    final changed = msgs.length != _msgs.length ||
-        (msgs.isNotEmpty && _msgs.isNotEmpty && msgs.last['id'] != _msgs.last['id']);
+    // Detect any change: count, last message, or delivered status
+    var changed = msgs.length != _msgs.length;
+    if (!changed && msgs.isNotEmpty && _msgs.isNotEmpty) {
+      changed = msgs.last['id'] != _msgs.last['id'] ||
+                msgs.last['delivered'] != _msgs.last['delivered'];
+    }
     setState(() => _msgs = msgs);
     await widget.state.store.markRead(widget.peerId);
     if (changed && _scroll.hasClients) {

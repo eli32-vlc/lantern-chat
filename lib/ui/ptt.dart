@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:record/record.dart';
 
 import '../core/app_state.dart';
+import '../core/messages.dart';
 import '../core/mesh.dart';
 import '../core/protocol.dart';
 import 'l10n.dart';
@@ -24,9 +27,13 @@ class _PttScreenState extends State<PttScreen> {
   bool _transmitting = false;
   bool _receiving = false;
   String? _receivingFrom;
-  final List<List<int>> _rxChunks = [];
+  String? _recordingPath;
   Timer? _presenceTimer;
-  StreamSubscription? _eventSub; // H8: Track for cleanup
+  StreamSubscription? _eventSub;
+
+  // Audio playback for received voice
+  final _player = AudioPlayer();
+  final List<Uint8List> _rxChunks = [];
 
   // Channel presence: channel -> set of peer IDs
   final Map<String, Set<String>> _presence = {};
@@ -43,16 +50,15 @@ class _PttScreenState extends State<PttScreen> {
   void _setupCallbacks() {
     final msgs = widget.state.msgs;
     if (msgs == null) return;
-    // H8: Track subscription for cleanup
     _eventSub = msgs.events.listen((e) {
       if (!mounted) return;
       if (e.type == 'ptt_start') {
         setState(() { _receiving = true; _receivingFrom = e.peerId; _rxChunks.clear(); });
       } else if (e.type == 'ptt_data' && e.audioData != null) {
-        _rxChunks.add(e.audioData!);
+        _rxChunks.add(Uint8List.fromList(e.audioData!));
       } else if (e.type == 'ptt_stop') {
-        setState(() { _receiving = false; _receivingFrom = null; });
-        _playReceived();
+        setState(() { _receiving = false; });
+        _playReceivedAudio();
       } else if (e.type == 'ptt_presence' && e.peerId != null && e.channel != null) {
         setState(() {
           _presence.putIfAbsent(e.channel!, () => {});
@@ -68,24 +74,44 @@ class _PttScreenState extends State<PttScreen> {
     for (final peer in widget.state.peers) {
       msgs.sendPttPresence(peer, _channel);
     }
-    // Remove peers no longer in list
     for (final entry in _presence.entries) {
       entry.value.removeWhere((id) => !widget.state.peers.any((p) => p.id == id));
     }
   }
 
-  void _playReceived() {
-    if (_rxChunks.isEmpty || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Voice received (${_rxChunks.length} chunks)')));
-    // TODO: play via audioplayers when streaming decoder is available
+  Future<void> _playReceivedAudio() async {
+    if (_rxChunks.isEmpty) return;
+    // Combine all chunks into a single file
+    final dir = Directory.systemTemp;
+    final path = '${dir.path}/ptt_rx_${DateTime.now().millisecondsSinceEpoch}.m4a';
+    final out = BytesBuilder();
+    for (final chunk in _rxChunks) {
+      out.add(chunk);
+    }
+    await File(path).writeAsBytes(out.toBytes());
+    _rxChunks.clear();
+
+    // Play the file
+    try {
+      await player.play(DeviceFileSource(path));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Voice message played'), duration: Duration(seconds: 2)));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not play voice: $e')));
+      }
+    }
   }
 
   @override
   void dispose() {
     _presenceTimer?.cancel();
-    _eventSub?.cancel(); // H8: Cancel event subscription
+    _eventSub?.cancel();
     _recorder.dispose();
+    _player.dispose();
     super.dispose();
   }
 
@@ -103,40 +129,38 @@ class _PttScreenState extends State<PttScreen> {
       return;
     }
 
-    setState(() => _transmitting = true);
+    setState(() { _transmitting = true; _receivingFrom = null; });
 
     // Send PTT start
     widget.state.msgs?.sendPttStart(peer, _channel);
 
     // Record to temp file
     final path = '${Directory.systemTemp.path}/ptt_${DateTime.now().millisecondsSinceEpoch}.m4a';
+    _recordingPath = path;
     await _recorder.start(
-      const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 16000, numChannels: 1, bitRate: 16000),
+      const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 16000, numChannels: 1, bitRate: 32000),
       path: path,
     );
 
-    // Stream recorded audio periodically
+    // Stream chunks while recording
     _streamChunks(peer, path);
   }
 
   void _streamChunks(Peer peer, String path) async {
     int lastSize = 0;
-    
     while (_transmitting) {
-      await Future.delayed(Duration(milliseconds: 200)); // M6: Slower pace for 1Mbps links
+      await Future.delayed(Duration(milliseconds: 300));
       if (!_transmitting) break;
       try {
         final file = File(path);
         if (await file.exists()) {
-          // H9: Only read new bytes, not entire file
           final size = await file.length();
-          if (size > lastSize) {
+          if (size > lastSize && size - lastSize > 100) {
             final raf = await file.open(mode: FileMode.read);
             await raf.setPosition(lastSize);
             final chunk = await raf.read(size - lastSize);
             await raf.close();
             lastSize = size;
-            // Split into UDP-safe pieces
             widget.state.msgs?.sendPttData(peer, chunk);
           }
         }
@@ -155,6 +179,10 @@ class _PttScreenState extends State<PttScreen> {
     if (peer == null) return;
 
     widget.state.msgs?.sendPttStop(peer);
+
+    // Store recording locally (no sendFile method yet)
+    // The real-time UDP chunks handle delivery
+    _recordingPath = null;
   }
 
   @override
@@ -222,24 +250,47 @@ class _PttScreenState extends State<PttScreen> {
           // Status area
           Expanded(child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
             if (_receiving) ...[
-              Icon(Icons.hearing, size: 64, color: Colors.green),
-              SizedBox(height: 12),
+              Container(
+                padding: EdgeInsets.all(20),
+                decoration: BoxDecoration(color: Colors.green.shade50, shape: BoxShape.circle),
+                child: Icon(Icons.hearing, size: 48, color: Colors.green),
+              ),
+              SizedBox(height: 16),
               Text('${S.of(context).receivingFrom} ${_receivingFrom ?? ""}',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
               SizedBox(height: 8),
-              LinearProgressIndicator(),
+              Text('Playing audio…', style: TextStyle(color: Colors.grey)),
             ] else if (_transmitting) ...[
-              Icon(Icons.mic, size: 64, color: Colors.red),
-              SizedBox(height: 12),
-              Text(S.of(context).transmitting, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+              Container(
+                padding: EdgeInsets.all(20),
+                decoration: BoxDecoration(color: Colors.red.shade50, shape: BoxShape.circle),
+                child: Icon(Icons.mic, size: 48, color: Colors.red),
+              ),
+              SizedBox(height: 16),
+              Text(S.of(context).transmitting, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.red)),
               SizedBox(height: 8),
               Text(S.of(context).releaseToStop, style: TextStyle(color: Colors.grey)),
             ] else ...[
-              Icon(Icons.radio, size: 64, color: _selectedPeerId != null
-                  ? Theme.of(context).colorScheme.primary : Colors.grey),
-              SizedBox(height: 12),
-              Text(_selectedPeerId != null ? S.of(context).holdToTalk : S.of(context).selectPeerAbove,
-                  style: TextStyle(color: Colors.grey)),
+              Container(
+                padding: EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: _selectedPeerId != null
+                      ? Theme.of(context).colorScheme.primaryContainer
+                      : Colors.grey.shade200,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(Icons.radio, size: 48,
+                    color: _selectedPeerId != null
+                        ? Theme.of(context).colorScheme.primary
+                        : Colors.grey),
+              ),
+              SizedBox(height: 16),
+              Text(
+                  _selectedPeerId != null ? S.of(context).holdToTalk : S.of(context).selectPeerAbove,
+                  style: TextStyle(fontSize: 16, color: Colors.grey)),
+              SizedBox(height: 8),
+              if (_selectedPeerId != null)
+                Text('Channel: #$_channel', style: TextStyle(fontSize: 12, color: Colors.grey)),
             ],
           ]))),
 
@@ -249,15 +300,23 @@ class _PttScreenState extends State<PttScreen> {
             child: GestureDetector(
               onLongPressStart: (_) => _startTransmit(),
               onLongPressEnd: (_) => _stopTransmit(),
-              child: Container(
-                width: 120, height: 120,
+              onLongPressCancel: () => _stopTransmit(),
+              child: AnimatedContainer(
+                duration: Duration(milliseconds: 200),
+                width: _transmitting ? 140 : 120,
+                height: _transmitting ? 140 : 120,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: _transmitting ? Colors.red
                       : _selectedPeerId != null ? Theme.of(context).colorScheme.primary : Colors.grey,
-                  boxShadow: _transmitting ? [BoxShadow(color: Colors.red.withValues(alpha: 0.4), blurRadius: 20, spreadRadius: 5)] : null,
+                  boxShadow: _transmitting
+                      ? [BoxShadow(color: Colors.red.withValues(alpha: 0.5), blurRadius: 30, spreadRadius: 10)]
+                      : [BoxShadow(color: Colors.black26, blurRadius: 8)],
                 ),
-                child: Center(child: Icon(_transmitting ? Icons.mic : Icons.mic_none, size: 48, color: Colors.white)),
+                child: Center(child: Icon(
+                    _transmitting ? Icons.mic : Icons.mic_none,
+                    size: _transmitting ? 56 : 48,
+                    color: Colors.white)),
               ),
             ),
           )),

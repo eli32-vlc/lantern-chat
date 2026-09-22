@@ -35,6 +35,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   List<Peer> peers = [];
   DateTime? _lastResume;
 
+  // In-app notification callback (set by HomeShell)
+  void Function(String senderName, String text, String chatId)? onMessage;
+
   // Rate limiting
   final _sendTimes = <String, List<DateTime>>{};
 
@@ -176,6 +179,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         });
         await _refreshChats();
         notifyListeners();
+
+        // In-app notification
+        if (onMessage != null) {
+          final peer = await store.getPeer(e.peerId!);
+          final name = peer?['name'] as String? ?? 'Someone';
+          final text = p['text'] as String? ?? (kind == 'voice' ? '🎤 Voice message' : '📎 Attachment');
+          onMessage!(name, text, chatId);
+        }
       } catch (err) {
         DiagLog.add('event', 'error processing payload: $err');
       }
