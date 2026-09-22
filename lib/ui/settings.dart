@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_state.dart';
 import 'diag_page.dart';
@@ -9,14 +10,45 @@ import 'onboarding.dart';
 import 'qr_screens.dart';
 import 'theme.dart';
 
-class SettingsTab extends StatelessWidget {
+class SettingsTab extends StatefulWidget {
   final AppState state;
   const SettingsTab({super.key, required this.state});
 
   @override
+  State<SettingsTab> createState() => _SettingsTabState();
+}
+
+class _SettingsTabState extends State<SettingsTab> {
+  bool _bgMode = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBgMode();
+  }
+
+  Future<void> _loadBgMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() => _bgMode = prefs.getBool('bg_mode') ?? true);
+    }
+  }
+
+  Future<void> _toggleBgMode(bool v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('bg_mode', v);
+    setState(() => _bgMode = v);
+    if (v) {
+      const MethodChannel('com.lantern/service').invokeMethod('startService');
+    } else {
+      const MethodChannel('com.lantern/service').invokeMethod('stopService');
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: state,
+      animation: widget.state,
       builder: (context, _) => ListView(
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
@@ -27,19 +59,19 @@ class SettingsTab extends StatelessWidget {
                 CircleAvatar(
                   radius: 30,
                   child: L.txt(
-                    state.displayName.isEmpty
+                    widget.state.displayName.isEmpty
                         ? '?'
-                        : state.displayName[0].toUpperCase(),
+                        : widget.state.displayName[0].toUpperCase(),
                     size: 22,
                   ),
                 ),
                 const SizedBox(height: 6),
-                L.txt(state.displayName,
+                L.txt(widget.state.displayName,
                     size: L.title, weight: FontWeight.w600),
-                L.muteTxt(context, state.status),
-                if (state.identity != null)
+                L.muteTxt(context, widget.state.status),
+                if (widget.state.identity != null)
                   FutureBuilder<String>(
-                    future: state.identity!.handle,
+                    future: widget.state.identity!.handle,
                     builder: (context, snap) {
                       if (!snap.hasData || snap.data!.isEmpty) {
                         return const SizedBox.shrink();
@@ -82,16 +114,8 @@ class SettingsTab extends StatelessWidget {
               subtitle: L.muteTxt(context,
                   'Keep discovering devices when app is closed'),
               trailing: Switch(
-                value: true, // Always on for now
-                onChanged: (v) {
-                  if (v) {
-                    const MethodChannel('com.lantern/service')
-                        .invokeMethod('startService');
-                  } else {
-                    const MethodChannel('com.lantern/service')
-                        .invokeMethod('stopService');
-                  }
-                },
+                value: _bgMode,
+                onChanged: _toggleBgMode,
               ),
             ),
           ListTile(
@@ -126,8 +150,8 @@ class SettingsTab extends StatelessWidget {
   }
 
   void _editProfile(BuildContext context) {
-    final name = TextEditingController(text: state.displayName);
-    var status = state.status;
+    final name = TextEditingController(text: widget.state.displayName);
+    var status = widget.state.status;
     showDialog(
       context: context,
       builder: (d) => AlertDialog(

@@ -64,6 +64,7 @@ class ContentStore {
   }
 
   /// Import content from raw bytes (received from peer).
+  /// If bytes is empty, stores metadata only (placeholder for announce).
   Future<String> importBytes(Uint8List bytes, {
     required String name,
     String? mimeType,
@@ -72,22 +73,30 @@ class ContentStore {
     final hash = await _hashBytes(bytes);
     final mime = mimeType ?? _guessMime(name);
     const pieceSize = 256 * 1024;
-    final totalPieces = (bytes.length / pieceSize).ceil().clamp(1, 100000);
+    final totalPieces = bytes.isEmpty
+        ? 0 // B1: no pieces for placeholder
+        : (bytes.length / pieceSize).ceil().clamp(1, 100000);
 
-    for (var i = 0; i < totalPieces; i++) {
-      final start = i * pieceSize;
-      final end = (start + pieceSize).clamp(0, bytes.length);
-      final piece = bytes.sublist(start, end);
-      await _db!.insert('content_pieces', {
-        'hash': hash,
-        'piece_idx': i,
-        'data': Uint8List.fromList(piece),
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    // B24: Only store pieces if we have actual data
+    if (bytes.isNotEmpty) {
+      for (var i = 0; i < totalPieces; i++) {
+        final start = i * pieceSize;
+        final end = (start + pieceSize).clamp(0, bytes.length);
+        final piece = bytes.sublist(start, end);
+        await _db!.insert('content_pieces', {
+          'hash': hash,
+          'piece_idx': i,
+          'data': Uint8List.fromList(piece),
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
     }
 
-    // Save assembled file to disk
-    final localPath = '$_basePath/$hash';
-    await File(localPath).writeAsBytes(bytes);
+    // B1: Don't write empty file to disk
+    String? localPath;
+    if (bytes.isNotEmpty) {
+      localPath = '$_basePath/$hash';
+      await File(localPath).writeAsBytes(bytes);
+    }
 
     await _db!.insert('content', {
       'hash': hash,
@@ -97,7 +106,7 @@ class ContentStore {
       'pieces': totalPieces,
       'published_by': publishedBy ?? 'peer',
       'published_at': DateTime.now().millisecondsSinceEpoch,
-      'local_path': localPath,
+      'local_path': localPath ?? '',
       'is_pinned': 0,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
 
@@ -188,13 +197,14 @@ class ContentStore {
     for (final row in rows) {
       final hash = row['hash'] as String;
       if (seen.add(hash)) {
-        // Check if we already have it locally
-        final local = await hasContent(hash);
-        if (!local) {
-          final meta = await getContent(hash);
-          if (meta != null) {
-            result.add(meta);
-          }
+        // B26: Check if we have actual data (not just placeholder)
+        final meta = await getContent(hash);
+        if (meta == null) continue;
+        final localPath = meta['local_path'] as String? ?? '';
+        final hasData = localPath.isNotEmpty &&
+            await File(localPath).existsSync();
+        if (!hasData) {
+          result.add(meta);
         }
       }
     }

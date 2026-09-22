@@ -151,12 +151,51 @@ class _QrImportScreenState extends State<QrImportScreen> {
       return;
     }
     setState(() { _importing = true; _error = null; });
-    final ok = await widget.state.importAccountFromQr(_scannedData!, passcode);
+    final result = await widget.state.importAccountFromQr(
+        _scannedData!, passcode);
     if (!mounted) return;
-    if (ok) {
+    if (result == 'confirm') {
+      // B34: Ask for confirmation before overwriting
+      setState(() => _importing = false);
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (d) => AlertDialog(
+          title: L.txt('Replace account?', size: L.title),
+          content: L.txt(
+              'This will replace your current account. Continue?',
+              size: L.body),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(d, false),
+                child: L.txt('Cancel', size: L.body)),
+            TextButton(
+                onPressed: () => Navigator.pop(d, true),
+                child: L.txt('Replace', size: L.body, color: Colors.red)),
+          ],
+        ),
+      );
+      if (confirm == true) {
+        setState(() => _importing = true);
+        final ok = await widget.state.importAccountFromQr(
+            _scannedData!, passcode, forceConfirm: true);
+        if (!mounted) return;
+        if (ok == 'true') {
+          Navigator.of(context).popUntil((r) => r.isFirst);
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Account imported!')));
+        } else {
+          setState(() {
+            _importing = false;
+            _error = 'Wrong passcode or corrupted QR.';
+            _scanned = false;
+            _scannedData = null;
+          });
+        }
+      }
+    } else if (result == 'true') {
       Navigator.of(context).popUntil((r) => r.isFirst);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Account imported! Device linked.')));
+          const SnackBar(content: Text('Account imported! Device linked.')));
     } else {
       setState(() {
         _importing = false;

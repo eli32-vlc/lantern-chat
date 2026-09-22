@@ -25,6 +25,7 @@ class _PttTabState extends State<PttTab> {
   String? _receivingFrom;
   final _audioRecorder = AudioRecorder();
   final List<List<int>> _receivedChunks = [];
+  String? _recPath;
 
   @override
   void initState() {
@@ -90,7 +91,6 @@ class _PttTabState extends State<PttTab> {
     final peer = widget.state.peerById(_selectedPeerId!);
     if (peer == null) return;
 
-    // Check mic permission
     if (!await _audioRecorder.hasPermission()) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -104,7 +104,9 @@ class _PttTabState extends State<PttTab> {
     // Send PTT start signal
     widget.state.engine?.sendPttStart(peer);
 
-    // Start recording
+    // B22: Record to a real temp file, not /dev/null
+    final dir = Directory.systemTemp;
+    _recPath = '${dir.path}/ptt_${DateTime.now().millisecondsSinceEpoch}.m4a';
     await _audioRecorder.start(
       const RecordConfig(
         encoder: AudioEncoder.aacLc,
@@ -112,10 +114,10 @@ class _PttTabState extends State<PttTab> {
         numChannels: 1,
         bitRate: 16000,
       ),
-      path: '/dev/null', // We'll stream chunks
+      path: _recPath!,
     );
 
-    // Stream audio chunks via UDP
+    // B21: Send keepalive while recording
     _streamAudioChunks(peer);
   }
 
@@ -134,7 +136,7 @@ class _PttTabState extends State<PttTab> {
   Future<void> _stopTransmit() async {
     if (!_transmitting) return;
 
-    final path = await _audioRecorder.stop();
+    await _audioRecorder.stop();
     setState(() => _transmitting = false);
 
     if (_selectedPeerId == null) return;
@@ -144,10 +146,10 @@ class _PttTabState extends State<PttTab> {
     // Send PTT stop signal
     widget.state.engine?.sendPttStop(peer);
 
-    // If we have a recorded file, send it as a voice message
-    if (path != null && path != '/dev/null') {
+    // B22: Send the recorded file as a voice message
+    if (_recPath != null && File(_recPath!).existsSync()) {
       await widget.state.sendFile(
-          _selectedPeerId!, path, LanternMsgKind.voice);
+          _selectedPeerId!, _recPath!, LanternMsgKind.voice);
     }
   }
 

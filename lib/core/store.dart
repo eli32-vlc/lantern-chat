@@ -514,9 +514,11 @@ class ChatStore {
   // ---- search ----
   Future<List<ChatMessage>> searchMessages(String query,
       {int limit = 50}) async {
+    // B29: Escape SQL LIKE wildcards
+    final escaped = query.replaceAll('%', '\\%').replaceAll('_', '\\_');
     final rows = await db.query('messages',
         where: 'text LIKE ?',
-        whereArgs: ['%$query%'],
+        whereArgs: ['%$escaped%'],
         orderBy: 'ts DESC',
         limit: limit);
     return rows.reversed.map(ChatMessage.fromRow).toList();

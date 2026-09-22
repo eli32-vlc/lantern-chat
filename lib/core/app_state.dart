@@ -256,11 +256,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    // Verify TCP server is still listening
+    // B16/B30: Verify TCP server AND UDP socket are still alive
     try {
-      // Quick health check: if port is0, server is dead
-      if (engine!.port == 0) {
-        DiagLog.add('lifecycle', 'TCP server dead, restarting engine');
+      if (engine!.port == 0 || engine!.udpPort == 0) {
+        DiagLog.add('lifecycle', 'TCP or UDP dead, restarting engine');
         await restartEngine();
         return;
       }
@@ -390,10 +389,17 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Import account from QR data + passphrase. Replaces current account.
-  /// Returns true on success.
-  Future<bool> importAccountFromQr(String qrB64, String passcode) async {
+  /// Returns true on success. Returns 'confirm' if existing account would be replaced.
+  Future<String> importAccountFromQr(String qrB64, String passcode,
+      {bool forceConfirm = false}) async {
+    // B34: Check if existing account would be overwritten
+    if (account != null && onboarded && !forceConfirm) {
+      return 'confirm';
+    }
     try {
       final packed = base64Decode(qrB64);
+      // B38: Validate minimum ciphertext length
+      if (packed.length < 28) return 'false';
       // Derive key from passphrase
       final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
       final key = await hkdf.deriveKey(
@@ -440,9 +446,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       // Restart engine with new identity
       await restartEngine();
       notifyListeners();
-      return true;
+      return 'true';
     } catch (e) {
-      return false;
+      return 'false';
     }
   }
 
@@ -490,8 +496,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (engine != null) {
       await engine!.leaveGroup(groupId);
     }
-    await store.db.delete('messages',
-        where: 'chat_id = ?', whereArgs: [groupId]);
+    // B32: Don't delete messages — keep history
     await refreshChats();
   }
 

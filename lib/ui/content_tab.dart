@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -20,13 +21,12 @@ class _ContentTabState extends State<ContentTab> {
   List<Map<String, dynamic>> _published = [];
   List<Map<String, dynamic>> _available = [];
   bool _loading = true;
-  Timer? _refresh;
 
   @override
   void initState() {
     super.initState();
     _load();
-    _refresh = Timer.periodic(const Duration(seconds: 5), (_) => _load());
+    // B50: Use callback instead of polling
     widget.state.engine?.onContentChanged = () {
       if (mounted) _load();
     };
@@ -242,7 +242,12 @@ class _ContentTabState extends State<ContentTab> {
       );
     } else if (mime.startsWith('text/') || mime == 'application/json' ||
         mime == 'application/javascript') {
-      final text = await file.readAsString();
+      // B23: Limit text preview to first 100KB to avoid OOM
+      final bytes = await file.readAsBytes();
+      final textBytes = bytes.length > 100 * 1024
+          ? bytes.sublist(0, 100 * 1024)
+          : bytes;
+      final text = utf8.decode(textBytes, allowMalformed: true);
       if (!context.mounted) return;
       showDialog(
         context: context,

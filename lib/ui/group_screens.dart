@@ -146,7 +146,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
   Timer? _poll;
   bool _sending = false;
   List<String> _memberIds = [];
-  final _senderNames = <String, String>{}; // cache sender names
 
   @override
   void initState() {
@@ -163,21 +162,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
   }
 
   Future<String?> _resolveName(String senderId) async {
-    if (_senderNames.containsKey(senderId)) return _senderNames[senderId];
-    // Check live peers
+    // B28: Don't cache — always fetch fresh
     for (final p in widget.state.peers) {
-      if (p.id == senderId) {
-        _senderNames[senderId] = p.name;
-        return p.name;
-      }
+      if (p.id == senderId) return p.name;
     }
-    // Fallback: query store
     final known = await widget.state.store.getPeer(senderId);
-    final name = known?.name;
-    if (name != null && name.isNotEmpty) {
-      _senderNames[senderId] = name;
-    }
-    return name;
+    return known?.name;
   }
 
   @override

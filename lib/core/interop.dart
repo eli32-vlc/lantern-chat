@@ -64,11 +64,9 @@ class InteropScanner {
   /// Extra candidate types worth a direct browse even if enumeration misses
   /// them (some stacks don't answer enumeration queries).
   static const candidates = [
-    '_airchat._tcp',
-    '_air-chat._tcp',
     '_wifi-chat._tcp',
     '_wifichat._tcp',
-    '_http._tcp', // many Flutter LAN chats piggyback http for signaling
+    '_http._tcp',
   ];
 
   static const enumType = '_services._dns-sd._udp';

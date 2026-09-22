@@ -100,6 +100,8 @@ class LanEngine {
   final _pendingUdpAcks = <String, _UdpPendingAck>{};
   /// Active file transfers: transferId -> state.
   final _fileTransfers = <String, _FileTransferState>{};
+  /// Sockets that already have a done handler registered.
+  final _doneHandled = <Socket>{};
 
   Stream<List<LanPeer>> get peers => _peerCtrl.stream;
   Stream<LanEvent> get events => _eventCtrl.stream;
@@ -116,6 +118,7 @@ class LanEngine {
   });
 
   int get port => _server?.port ?? 0;
+  int get udpPort => _udpPort;
 
   Future<Map<String, Uint8List?>> _txt(int p) async => {
         LanternProtocol.txtId: _txtBytes(me.id),
@@ -190,9 +193,9 @@ class LanEngine {
         startError = 'Discovery failed: $e';
       }
 
-      _prune ??= Timer.periodic(const Duration(seconds: 15), (_) {
+      _prune ??= Timer.periodic(const Duration(seconds: 30), (_) {
         final cutoff =
-            DateTime.now().subtract(const Duration(seconds: 60));
+            DateTime.now().subtract(const Duration(minutes: 5));
         _peers.removeWhere((_, p) => p.lastSeen.isBefore(cutoff));
         if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
       });
@@ -217,9 +220,23 @@ class LanEngine {
   Future<void> updateProfile(String name, String st) async {
     displayName = name;
     status = st;
-    // Re-register TXT on the same port. Simplest reliable path: full restart.
-    await stop();
-    await start();
+    // B44: Don't restart engine — just update mDNS TXT record
+    // Preserve session cache and socket pool
+    try {
+      if (_reg != null) {
+        await unregister(_reg!);
+      }
+      final svc = Service(
+        name: '${LanternProtocol.serviceNamePrefix}${me.id.substring(0, 8)}',
+        type: LanternProtocol.serviceType,
+        port: port,
+        txt: await _txt(port),
+      );
+      _reg = await register(svc);
+      DiagLog.add('mdns', 're-registered with new profile');
+    } catch (e) {
+      DiagLog.add('mdns', 'profile re-register failed: $e');
+    }
   }
 
   Future<void> _onServiceEvent(Service s, ServiceStatus st) async {
@@ -387,22 +404,39 @@ class LanEngine {
     if (peer == null) return;
     for (final row in queued) {
       final id = row['id'] as int;
-      final frame = row['frame'] as Uint8List;
+      final frameData = row['frame'] as Uint8List;
       final attempts = row['attempts'] as int;
       if (attempts >= 5) {
         await store.removeQueuedMessage(id);
         continue;
       }
-      final sock = await _dial(peer);
-      if (sock == null) break;
+      // B18: Decode and re-encrypt with current session key
       try {
-        sock.add(frame);
-        await sock.flush();
-        await store.removeQueuedMessage(id);
-        DiagLog.add('queue', 'delivered queued msg $id');
+        final json = decodeJson(frameData);
+        if (json.containsKey('queued_payload')) {
+          final payload =
+              Map<String, dynamic>.from(json['queued_payload'] as Map);
+          final ok = await sendTo(peer, payload);
+          if (ok) {
+            await store.removeQueuedMessage(id);
+            DiagLog.add('queue', 'delivered queued msg $id');
+          } else {
+            await store.incrementQueueAttempt(id);
+          }
+        } else {
+          // Legacy: try sending pre-encrypted frame directly
+          final sock = await _dial(peer);
+          if (sock == null) break;
+          try {
+            sock.add(frameData);
+            await sock.flush();
+            await store.removeQueuedMessage(id);
+          } catch (_) {
+            await store.incrementQueueAttempt(id);
+          }
+        }
       } catch (_) {
         await store.incrementQueueAttempt(id);
-        break;
       }
     }
   }
@@ -410,14 +444,24 @@ class LanEngine {
   /// Send typing indicator to a peer.
   void sendTyping(LanPeer peer) {
     if (_udpSocket == null || peer.udpPort == 0) return;
+    // Throttle to once per 2 seconds (B17)
+    final now = DateTime.now();
+    if (_lastTypingSent != null &&
+        now.difference(_lastTypingSent!) < _typingThrottle) {
+      return;
+    }
+    _lastTypingSent = now;
     final packet = _buildUdpData(
-        'typing', Uint8List.fromList([LanternProtocol.udpTypeTyping]));
+        'typ-${now.millisecondsSinceEpoch % 10000}',
+        Uint8List.fromList([LanternProtocol.udpTypeTyping]));
     _udpSocket!.send(
         packet, InternetAddress(peer.host), peer.udpPort);
   }
 
   // Typing indicator callback (set by UI)
   void Function(String peerId)? onTyping;
+  DateTime? _lastTypingSent;
+  static const _typingThrottle = Duration(seconds: 2);
 
   // PTT callbacks (set by UI)
   void Function(String peerId, List<int> audioData)? onPttData;
@@ -427,10 +471,16 @@ class LanEngine {
   /// Send PTT voice data to a peer.
   void sendPttData(LanPeer peer, List<int> audioChunk) {
     if (_udpSocket == null || peer.udpPort == 0) return;
-    final packet = _buildUdpData(
-        'ptt', Uint8List.fromList([LanternProtocol.udpTypePttData, ...audioChunk]));
-    _udpSocket!.send(
-        packet, InternetAddress(peer.host), peer.udpPort);
+    // Split into sub-1400 byte pieces to avoid UDP fragmentation (B14)
+    const maxChunk = 1300; // leave room for header
+    for (var i = 0; i < audioChunk.length; i += maxChunk) {
+      final end = (i + maxChunk).clamp(0, audioChunk.length);
+      final piece = audioChunk.sublist(i, end);
+      final packet = _buildUdpData(
+          'ptt', Uint8List.fromList([LanternProtocol.udpTypePttData, ...piece]));
+      _udpSocket!.send(
+          packet, InternetAddress(peer.host), peer.udpPort);
+    }
   }
 
   /// Send PTT start signal.
@@ -505,52 +555,67 @@ class LanEngine {
 
   /// Start sending file chunks after peer accepts.
   void _startFileSend(_FileTransferState ft) async {
-    final peer = _peers.values.where((p) => p.id == ft.peerId).firstOrNull;
-    if (peer == null) return;
-    final file = File(ft.filePath);
-    if (!await file.exists()) return;
-
-    final bytes = await file.readAsBytes();
-    const chunkSize = 48 * 1024; // 48KB chunks
-    final total = (bytes.length / chunkSize).ceil();
-
-    for (var i = 0; i < total; i++) {
-      if (ft.cancelled) break;
-      final end = ((i + 1) * chunkSize).clamp(0, bytes.length);
-      final chunk = bytes.sublist(i * chunkSize, end);
-
-      final ok = await sendTo(peer, {
-        'kind': ft.kind,
-        'id': ft.transferId,
-        'ts': DateTime.now().millisecondsSinceEpoch,
-        'name': ft.fileName,
-        'bytes': ft.fileSize,
-        'chunk': i,
-        'chunks': total,
-        'data': base64Encode(chunk),
-      });
-
-      ft.bytesSent = end;
-      if (onFileProgress != null) {
-        onFileProgress!(ft.transferId, ft.progress);
+    try {
+      final peer = _peers.values.where((p) => p.id == ft.peerId).firstOrNull;
+      if (peer == null) {
+        if (onFileComplete != null) onFileComplete!(ft.transferId, false);
+        _fileTransfers.remove(ft.transferId);
+        return;
+      }
+      final file = File(ft.filePath);
+      if (!await file.exists()) {
+        if (onFileComplete != null) onFileComplete!(ft.transferId, false);
+        _fileTransfers.remove(ft.transferId);
+        return;
       }
 
-      if (!ok) {
-        DiagLog.add('file', 'chunk $i failed for ${ft.transferId}');
-        break;
+      final bytes = await file.readAsBytes();
+      const chunkSize = 48 * 1024;
+      final total = (bytes.length / chunkSize).ceil();
+
+      for (var i = 0; i < total; i++) {
+        if (ft.cancelled) break;
+        final end = ((i + 1) * chunkSize).clamp(0, bytes.length);
+        final chunk = bytes.sublist(i * chunkSize, end);
+
+        final ok = await sendTo(peer, {
+          'kind': ft.kind,
+          'id': ft.transferId,
+          'ts': DateTime.now().millisecondsSinceEpoch,
+          'name': ft.fileName,
+          'bytes': ft.fileSize,
+          'chunk': i,
+          'chunks': total,
+          'data': base64Encode(chunk),
+        });
+
+        ft.bytesSent = end;
+        if (onFileProgress != null) {
+          onFileProgress!(ft.transferId, ft.progress);
+        }
+
+        if (!ok) {
+          DiagLog.add('file', 'chunk $i failed for ${ft.transferId}');
+          if (onFileComplete != null) onFileComplete!(ft.transferId, false);
+          _fileTransfers.remove(ft.transferId);
+          return;
+        }
+
+        await Future.delayed(const Duration(milliseconds: 50));
       }
 
-      // Small delay between chunks to avoid flooding
-      await Future.delayed(const Duration(milliseconds: 50));
+      if (!ft.cancelled) {
+        if (onFileComplete != null) {
+          onFileComplete!(ft.transferId, true);
+        }
+        DiagLog.add('file', 'sent ${ft.fileName} tid=${ft.transferId}');
+      }
+      _fileTransfers.remove(ft.transferId);
+    } catch (e) {
+      DiagLog.add('file', 'send error: $e');
+      if (onFileComplete != null) onFileComplete!(ft.transferId, false);
+      _fileTransfers.remove(ft.transferId);
     }
-
-    if (!ft.cancelled) {
-      if (onFileComplete != null) {
-        onFileComplete!(ft.transferId, true);
-      }
-      DiagLog.add('file', 'sent ${ft.fileName} tid=${ft.transferId}');
-    }
-    _fileTransfers.remove(ft.transferId);
   }
 
   /// Cancel a file transfer.
@@ -590,7 +655,7 @@ class LanEngine {
   }
 
   /// Announce our content to all connected peers.
-  Future<void> _announceContent() async {
+  Future<void> _announceContent({String? excludePeerId}) async {
     final items = await contentStore.getAnnouncement();
     if (items.isEmpty) return;
     final payload = {
@@ -600,6 +665,7 @@ class LanEngine {
     };
     final frame = LanternProtocol.encodeFrame(payload);
     for (final peer in _peers.values) {
+      if (peer.id == excludePeerId) continue; // B4: don't echo back
       final sock = await _dial(peer);
       if (sock == null) continue;
       try {
@@ -656,26 +722,33 @@ class LanEngine {
     final dead = <String>[];
     for (final entry in _sockets.entries) {
       try {
-        // Try to detect dead sockets by checking if done future completed
-        entry.value.done.then((_) {
-          // Socket closed — remove from tracking
-          if (_sockets[entry.key] == entry.value) {
-            _sockets.remove(entry.key);
-            DiagLog.add('health', 'removed dead socket for ${entry.key}');
-          }
-        }).catchError((_) {
-          if (_sockets[entry.key] == entry.value) {
-            _sockets.remove(entry.key);
-          }
-        });
-        // Also try a zero-byte write to detect broken pipe
+        // Register done handler only once per socket (B39)
+        if (!_doneHandled.contains(entry.value)) {
+          _doneHandled.add(entry.value);
+          entry.value.done.then((_) {
+            if (_sockets[entry.key] == entry.value) {
+              _sockets.remove(entry.key);
+              _helloReplied.remove(entry.value);
+              _doneHandled.remove(entry.value);
+              DiagLog.add('health', 'removed dead socket for ${entry.key}');
+            }
+          }).catchError((_) {
+            _doneHandled.remove(entry.value);
+          });
+        }
+        // Try a zero-byte write to detect broken pipe
         entry.value.add(Uint8List(0));
       } catch (_) {
         dead.add(entry.key);
       }
     }
+    // Apply removals after iteration (B15)
     for (final id in dead) {
-      _sockets.remove(id);
+      final sock = _sockets.remove(id);
+      if (sock != null) {
+        _helloReplied.remove(sock);
+        _doneHandled.remove(sock);
+      }
       _sessions.remove(id);
       DiagLog.add('health', 'cleaned dead socket for $id');
     }
@@ -794,7 +867,10 @@ class LanEngine {
       final pk = json['pk'] as String? ?? '';
       final ah = json['ah'] as String? ?? '';
       final aid = json['aid'] as String? ?? '';
+      final peerVersion = json['v'] as int? ?? 0;
       if (id.isEmpty || pk.isEmpty || id == me.id) return;
+      // B48: Reject incompatible protocol versions
+      if (peerVersion > LanternProtocol.protoVersion) return;
       // Track inbound socket by peer id so sendTo can reuse it.
       // This prevents duplicate dials and the hello echo loop.
       if (dialPeerId == null && !_sockets.containsKey(id)) {
@@ -1063,6 +1139,17 @@ class LanEngine {
       final fileName = json['name'] as String? ?? 'file';
       final fileSize = json['size'] as int? ?? 0;
       if (from.isEmpty || transferId.isEmpty) return;
+      // B9: Reject files > 50MB automatically
+      if (fileSize > 50 * 1024 * 1024) {
+        DiagLog.add('file', 'rejected $fileName ($fileSize bytes) — too large');
+        try {
+          sock.add(LanternProtocol.encodeFrame({
+            't': LanternProtocol.frameFileReject,
+            'tid': transferId,
+          }));
+        } catch (_) {}
+        return;
+      }
       DiagLog.add('file',
           'offer from $from: $fileName ($fileSize bytes) tid=$transferId');
       // Auto-accept for now (could add UI prompt later)
@@ -1100,6 +1187,9 @@ class LanEngine {
       final from = json['from'] as String? ?? dialPeerId ?? '';
       final items = json['items'] as List<dynamic>? ?? [];
       if (from.isEmpty) return;
+      // B37: Verify peer is trusted
+      final knownPeer = await store.getPeer(from);
+      if (knownPeer == null || !knownPeer.trusted) return;
       for (final item in items) {
         final m = item as Map<String, dynamic>;
         final hash = m['hash'] as String? ?? '';
@@ -1123,6 +1213,9 @@ class LanEngine {
       final from = json['from'] as String? ?? dialPeerId ?? '';
       final hash = json['hash'] as String? ?? '';
       if (from.isEmpty || hash.isEmpty) return;
+      // B37: Verify peer is trusted
+      final reqKnown = await store.getPeer(from);
+      if (reqKnown == null || !reqKnown.trusted) return;
       // Send pieces we have
       final indices = await contentStore.getPieceIndices(hash);
       DiagLog.add('content',
@@ -1158,14 +1251,19 @@ class LanEngine {
       final dataB64 = json['data'] as String? ?? '';
       if (hash.isEmpty || dataB64.isEmpty) return;
       final data = base64Decode(dataB64);
+      // B40: Validate piece size
+      if (data.length > LanternProtocol.contentPieceSize) return;
       await contentStore.storePiece(hash, idx, Uint8List.fromList(data));
       DiagLog.add('content', 'piece $idx/$total for $hash');
       // Check if we have all pieces
       final have = await contentStore.getPieceIndices(hash);
-      if (have.length >= total) {
+      // B2: Check against metadata total, not sender's total
+      final meta = await contentStore.getContent(hash);
+      final expectedTotal = meta?['pieces'] as int? ?? total;
+      if (have.length >= expectedTotal) {
         await contentStore.assemble(hash);
         DiagLog.add('content', 'assembled $hash');
-        // Announce to other peers that we now have it
+        // B4: Announce to other peers that we now have it (not back to sender)
         _announceContent();
       }
       return;
@@ -1173,10 +1271,12 @@ class LanEngine {
     if (t == LanternProtocol.frameContentSearch) {
       final query = json['query'] as String? ?? '';
       if (query.isEmpty) return;
-      final results = await contentStore.search(query);
-      if (results.isEmpty) return;
       final from = json['from'] as String? ?? dialPeerId ?? '';
       if (from.isEmpty) return;
+      // B37: Verify peer is trusted
+      final searchKnown = await store.getPeer(from);
+      if (searchKnown == null || !searchKnown.trusted) return;
+      final results = await contentStore.search(query);
       final peer = _peers.values.where((p) => p.id == from).firstOrNull;
       if (peer == null) return;
       final sock = await _dial(peer);
@@ -1241,17 +1341,20 @@ class LanEngine {
           'send $msgId ${sealed.length}B to ${peer.host}:${peer.udpPort}');
       final ok = await _sendUdp(peer, sealed, msgId);
       if (!ok) {
-        // Queue for store-and-forward
-        await store.queueMessage(peer.id, frame);
+        // B18: Store plaintext for re-encryption on flush
+        await store.queueMessage(peer.id,
+            LanternProtocol.encodeFrame({'queued_payload': payload}));
         DiagLog.add('queue', 'queued $msgId for ${peer.id}');
       }
       return ok;
     }
 
     // Fall back to TCP
-    final ok = await _sendTcp(frame, msgId);
+    final ok = await _sendTcpTo(peer, frame, msgId);
     if (!ok) {
-      await store.queueMessage(peer.id, frame);
+      // B18: Store plaintext for re-encryption on flush
+      await store.queueMessage(peer.id,
+          LanternProtocol.encodeFrame({'queued_payload': payload}));
       DiagLog.add('queue', 'queued $msgId for ${peer.id}');
     }
     return ok;
@@ -1288,7 +1391,7 @@ class LanEngine {
             'from': me.id,
             'blob': base64Encode(sealed),
           });
-          _sendTcp(frame, msgId);
+          _sendTcpTo(peer, frame, msgId);
           return;
         }
         _udpSocket!.send(pending.data, pending.addr, pending.port);
@@ -1301,9 +1404,25 @@ class LanEngine {
     return true;
   }
 
-  /// Send via TCP (existing path).
+  /// Send via TCP to a specific peer.
+  Future<bool> _sendTcpTo(LanPeer peer, Uint8List frame, String? msgId) async {
+    final sock = await _dial(peer);
+    if (sock == null) return false;
+    try {
+      sock.add(frame);
+      await sock.flush();
+      if (msgId != null) {
+        _pendingAcks[msgId] = DateTime.now();
+      }
+      return true;
+    } catch (_) {
+      _sockets.remove(peer.id);
+      return false;
+    }
+  }
+
+  /// Send via TCP (legacy: any connected socket).
   Future<bool> _sendTcp(Uint8List frame, String? msgId) async {
-    // Find any connected socket to send on
     if (_sockets.isEmpty) return false;
     final sock = _sockets.values.first;
     try {
@@ -1415,14 +1534,41 @@ class LanEngine {
         }
       }
 
-      // Regular encrypted payload — send ACK and process
+      // Process the payload — ACK sent only after successful decryption
+      final success = await _processPayloadWithAck(
+          payload, dg.address.address, dg.port, msgId);
+    }
+  }
+
+  /// Process payload and send ACK only on successful decryption.
+  Future<bool> _processPayloadWithAck(
+      List<int> sealed, String senderHost, int senderPort, String msgId) async {
+    final from = _findPeerByHost(senderHost);
+    if (from == null) {
+      DiagLog.add('udp', 'unknown sender $senderHost, dropping');
+      return false;
+    }
+    final known = await store.getPeer(from);
+    if (known == null || !known.trusted || known.pubB64.isEmpty) {
+      DiagLog.add('udp', 'untrusted sender $from, dropping');
+      return false;
+    }
+    final key = await _sessionFor(from, known.pubB64);
+    if (key == null) return false;
+    try {
+      final plain = await PayloadBox.open(key, Uint8List.fromList(sealed));
+      // Decrypt succeeded — send ACK now (B12)
       _udpSocket!.send(
           Uint8List.fromList(_buildUdpAck(msgId)),
-          dg.address,
-          dg.port);
-      DiagLog.add('udp',
-          'DATA received from ${dg.address.address}, ACK sent');
-      _processPayload(payload, dg.address.address);
+          InternetAddress(senderHost), senderPort);
+      DiagLog.add('udp', 'DATA decrypted, ACK sent for $msgId');
+      if (!_eventCtrl.isClosed) {
+        _eventCtrl.add(LanEvent(from, plain));
+      }
+      return true;
+    } catch (e) {
+      DiagLog.add('udp', 'decrypt failed: $e');
+      return false;
     }
   }
 
@@ -1547,7 +1693,10 @@ class LanEngine {
       futures.add(_sendToMember(mid, sealed, groupId));
     }
     if (futures.isEmpty) return false;
-    final results = await Future.wait(futures);
+    // B42: Use timeout per member, don't block on slowest
+    final results = await Future.wait(
+        futures.map((f) => f.timeout(
+            const Duration(seconds: 3), onTimeout: () => false)));
     return results.any((r) => r);
   }
 
@@ -1643,9 +1792,13 @@ class LanEngine {
     _pendingAcks.clear();
     _syncing.clear();
     _syncCooldown.clear();
+    _doneHandled.clear();
   }
 
   void dispose() {
+    _prune?.cancel();
+    _ackTimer?.cancel();
+    _healthTimer?.cancel();
     unawaited(stop());
     _peerCtrl.close();
     _eventCtrl.close();

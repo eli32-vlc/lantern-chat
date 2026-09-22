@@ -135,7 +135,8 @@ class AccountIdentity {
   }
 
   static AccountIdentity? _instance;
-  static AccountIdentity get instance => _instance!;
+  static AccountIdentity? get instance => _instance;
+  static bool get isLoaded => _instance != null;
   /// Set instance (used by QR import).
   static set instance(AccountIdentity v) => _instance = v;
 
