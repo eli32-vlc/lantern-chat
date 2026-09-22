@@ -5,7 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_chat/core/crypto.dart';
 import 'package:lantern_chat/core/identity.dart';
 import 'package:lantern_chat/core/mesh.dart';
-import 'package:lantern_chat/core/protocol.dart';
 
 void main() {
   test('frame encode/decode round-trips JSON', () {

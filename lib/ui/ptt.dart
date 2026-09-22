@@ -138,7 +138,6 @@ class _PttScreenState extends State<PttScreen> {
             lastSize = size;
             // Split into UDP-safe pieces
             widget.state.msgs?.sendPttData(peer, chunk);
-            chunkCount++;
           }
         }
       } catch (_) {}
