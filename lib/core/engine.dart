@@ -879,7 +879,7 @@ class LanEngine {
 
   /// Handle incoming UDP datagram.
   void _onUdpDatagram(RawSocketEvent event) {
-    if (event != RawSocketEvent.readMore) return;
+    if (event != RawSocketEvent.read) return;
     final dg = _udpSocket!.receive();
     if (dg == null) return;
     final data = dg.data;
