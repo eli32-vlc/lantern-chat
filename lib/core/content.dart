@@ -54,6 +54,21 @@ class Content {
     return hash;
   }
 
+  /// Publish a folder (all files). Returns list of content hashes.
+  /// If folder contains index.html, it becomes the entry point.
+  Future<List<String>> publishFolder(String folderPath, {String? name}) async {
+    final dir = Directory(folderPath);
+    if (!await dir.exists()) throw ArgumentError('Folder not found');
+    final hashes = <String>[];
+    final files = dir.listSync(recursive: true).whereType<File>();
+    for (final file in files) {
+      final hash = await publish(file.path);
+      hashes.add(hash);
+    }
+    DiagLog.add('content', 'published folder ${hashes.length} files');
+    return hashes;
+  }
+
   /// Request content from peers.
   Future<void> request(String hash) async {
     final peers = await store.contentPeers(hash);

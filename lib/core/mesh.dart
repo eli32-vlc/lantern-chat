@@ -72,6 +72,7 @@ class Mesh {
   final sockets = <String, Socket>{};
   final helloReplied = <Socket, DateTime>{};
   final _doneHandled = <Socket>{};
+  final _connectTimes = <String, List<DateTime>>{}; // rate limiting
 
   Stream<List<Peer>> get peers => _peerCtrl.stream;
   Stream<RawFrame> get frames => _frameCtrl.stream;
@@ -166,6 +167,7 @@ class Mesh {
     helloReplied.clear();
     _doneHandled.clear();
     _sessions.clear();
+    _connectTimes.clear();
   }
 
   void dispose() {
@@ -284,6 +286,16 @@ class Mesh {
   }
 
   Future<Socket?> dial(Peer peer) async {
+    // Rate limiting: max 5 connections per peer per 10 seconds
+    final now = DateTime.now();
+    final times = _connectTimes.putIfAbsent(peer.id, () => []);
+    times.removeWhere((t) => now.difference(t) > Duration(seconds: 10));
+    if (times.length >= 5) {
+      DiagLog.add('mesh', 'rate limit hit for ${peer.id}');
+      return sockets[peer.id]; // return cached if available
+    }
+    times.add(now);
+
     final cached = sockets[peer.id];
     if (cached != null) {
       try {

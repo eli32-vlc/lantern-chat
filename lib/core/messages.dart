@@ -279,12 +279,14 @@ class Messages {
     if ((known['pub'] as String).isEmpty) return;
 
     // Verify signature if present (optional for backwards compat)
-    if (sig != null && signPubB64 != null && signPubB64.isNotEmpty) {
+    if (sig == null || signPubB64 == null || signPubB64.isEmpty) {
+      DiagLog.add('proto', 'UNSIGNED payload from $from — accepted (backwards compat)');
+    } else {
       try {
         final valid = await Account.verify(
             base64Decode(blob), base64Decode(sig), base64Decode(signPubB64));
         if (!valid) {
-          DiagLog.add('proto', 'BAD SIGNATURE from $from');
+          DiagLog.add('proto', 'BAD SIGNATURE from $from — rejected');
           return;
         }
       } catch (e) {

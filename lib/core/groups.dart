@@ -63,10 +63,16 @@ class Groups {
       final peer = mesh.currentPeers.where((p) => p.id == mid).firstOrNull;
       if (peer == null) continue;
       try {
-        await mesh.sendFrame(peer, {
+        final frame = <String, dynamic>{
           't': P.payload, 'from': mesh.device.id,
           'blob': base64Encode(sealed), 'gid': gid,
-        });
+        };
+        // Sign the group message
+        if (account != null) {
+          frame['sig'] = base64Encode(await account!.sign(sealed));
+          frame['sign_pub'] = await account!.pubB64;
+        }
+        await mesh.sendFrame(peer, frame);
         anySent = true;
       } catch (_) {}
     }
