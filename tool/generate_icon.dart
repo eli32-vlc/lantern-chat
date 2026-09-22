@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:math';
-import 'dart:convert';
+import 'dart:math'; // ignore: unused_import
+import 'dart:convert'; // ignore: unused_import
 
 /// Generates a simple lantern icon as a PNG file.
 /// Run: dart run tool/generate_icon.dart

@@ -96,9 +96,9 @@ class CompatSniffer {
 }
 
 /// A Socket wrapper that replays already-read bytes first, then live data.
-/// Uses a single-subscription controller (not broadcast) so no events are
-/// dropped between construction and listen(). The inner socket subscription
-/// is created lazily in listen() to avoid data loss.
+/// Kept for backwards compatibility; the Lantern path now uses direct
+/// prefix replay instead of wrapping.
+// ignore: unused_element
 class _PrefixSocket extends Stream<Uint8List> implements Socket {
   final Socket _inner;
   final List<int> _prefix;
