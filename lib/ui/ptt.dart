@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:record/record.dart';
 
 import '../core/app_state.dart';
-import '../core/messages.dart';
 import '../core/mesh.dart';
 import '../core/protocol.dart';
 import 'l10n.dart';
@@ -27,7 +26,6 @@ class _PttScreenState extends State<PttScreen> {
   bool _transmitting = false;
   bool _receiving = false;
   String? _receivingFrom;
-  String? _recPath;
   Timer? _presenceTimer;
   StreamSubscription? _eventSub;
 
@@ -136,7 +134,6 @@ class _PttScreenState extends State<PttScreen> {
 
     // Record to temp file
     final path = '${Directory.systemTemp.path}/ptt_${DateTime.now().millisecondsSinceEpoch}.m4a';
-    _recPath = path;
     await _recorder.start(
       const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 16000, numChannels: 1, bitRate: 32000),
       path: path,
@@ -182,7 +179,6 @@ class _PttScreenState extends State<PttScreen> {
 
     // Store recording locally (no sendFile method yet)
     // The real-time UDP chunks handle delivery
-    _recPath = null;
   }
 
   @override
