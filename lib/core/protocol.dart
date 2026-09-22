@@ -52,6 +52,9 @@ class P {
   static const udpPttStop = 0x12;
   static const udpPttPresence = 0x13;
 
+  // PTT
+  static const pttDefaultChannel = 'general';
+
   // UDP settings
   static const udpMaxPayload = 1400;
   static const udpMaxRetries = 10;

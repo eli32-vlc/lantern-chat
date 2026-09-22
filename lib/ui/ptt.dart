@@ -121,7 +121,7 @@ class _PttScreenState extends State<PttScreen> {
 
   void _streamChunks(Peer peer, String path) async {
     int lastSize = 0;
-    int chunkCount = 0;
+    
     while (_transmitting) {
       await Future.delayed(Duration(milliseconds: 200)); // M6: Slower pace for 1Mbps links
       if (!_transmitting) break;
