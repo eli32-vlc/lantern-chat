@@ -132,7 +132,7 @@ class ChatStore {
     final path = p.join(dir, 'lantern.db');
     _db = await openDatabase(
       path,
-      version: 6,
+      version: 7,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE peers(
@@ -225,6 +225,34 @@ class ChatStore {
               frame BLOB NOT NULL,
               created_at INTEGER NOT NULL,
               attempts INTEGER NOT NULL DEFAULT 0
+            )''');
+        }
+        if (oldV < 7) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS content(
+              hash TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              size INTEGER NOT NULL,
+              mime_type TEXT,
+              pieces INTEGER NOT NULL DEFAULT 1,
+              published_by TEXT,
+              published_at INTEGER,
+              local_path TEXT,
+              is_pinned INTEGER DEFAULT 0
+            )''');
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS content_pieces(
+              hash TEXT NOT NULL,
+              piece_idx INTEGER NOT NULL,
+              data BLOB,
+              PRIMARY KEY (hash, piece_idx)
+            )''');
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS content_peers(
+              hash TEXT NOT NULL,
+              peer_id TEXT NOT NULL,
+              last_seen INTEGER,
+              PRIMARY KEY (hash, peer_id)
             )''');
         }
       },

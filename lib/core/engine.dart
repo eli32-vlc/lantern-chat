@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:nsd/nsd.dart';
 import 'package:uuid/uuid.dart';
 
+import 'content_store.dart';
 import 'diag.dart';
 import 'identity.dart';
 import 'protocol.dart';
@@ -64,6 +65,7 @@ String _txtString(Uint8List? b) =>
 class LanEngine {
   final DeviceIdentity me;
   final ChatStore store;
+  final ContentStore contentStore;
   AccountIdentity? account;
   String displayName;
   String status;
@@ -108,6 +110,7 @@ class LanEngine {
   LanEngine({
     required this.me,
     required this.store,
+    required this.contentStore,
     required this.displayName,
     required this.status,
   });
@@ -338,6 +341,8 @@ class LanEngine {
       }
       // Flush queued messages for this peer
       _flushQueue(id);
+      // Announce our content to newly discovered peer
+      _announceContent();
     } catch (_) {
       // ignore malformed services
     }
@@ -569,6 +574,80 @@ class LanEngine {
     }
     _fileTransfers.remove(transferId);
     DiagLog.add('file', 'cancelled $transferId');
+  }
+
+  // ---- Content-addressed storage ----
+
+  /// Content change callback (set by UI).
+  void Function()? onContentChanged;
+
+  /// Publish a file to the content store and announce to peers.
+  Future<String> publishContent(String filePath, {String? name}) async {
+    final hash = await contentStore.publish(filePath, name: name);
+    _announceContent();
+    DiagLog.add('content', 'published $hash from $filePath');
+    return hash;
+  }
+
+  /// Announce our content to all connected peers.
+  Future<void> _announceContent() async {
+    final items = await contentStore.getAnnouncement();
+    if (items.isEmpty) return;
+    final payload = {
+      't': LanternProtocol.frameContentAnnounce,
+      'from': me.id,
+      'items': items,
+    };
+    final frame = LanternProtocol.encodeFrame(payload);
+    for (final peer in _peers.values) {
+      final sock = await _dial(peer);
+      if (sock == null) continue;
+      try {
+        sock.add(frame);
+      } catch (_) {}
+    }
+    DiagLog.add('content', 'announced ${items.length} items');
+  }
+
+  /// Request content from peers.
+  Future<void> requestContent(String hash) async {
+    final peers = await contentStore.getPeers(hash);
+    for (final peerId in peers) {
+      final peer = _peers.values.where((p) => p.id == peerId).firstOrNull;
+      if (peer == null) continue;
+      final sock = await _dial(peer);
+      if (sock == null) continue;
+      try {
+        sock.add(LanternProtocol.encodeFrame({
+          't': LanternProtocol.frameContentRequest,
+          'from': me.id,
+          'hash': hash,
+        }));
+        DiagLog.add('content', 'requested $hash from $peerId');
+      } catch (_) {}
+    }
+  }
+
+  /// Search for content across peers.
+  Future<void> searchContent(String query) async {
+    final frame = LanternProtocol.encodeFrame({
+      't': LanternProtocol.frameContentSearch,
+      'from': me.id,
+      'query': query,
+    });
+    for (final peer in _peers.values) {
+      final sock = await _dial(peer);
+      if (sock == null) continue;
+      try {
+        sock.add(frame);
+      } catch (_) {}
+    }
+  }
+
+  /// Delete content from local store.
+  Future<void> deleteContent(String hash) async {
+    await contentStore.delete(hash);
+    if (onContentChanged != null) onContentChanged!();
   }
 
   /// Verify socket health — removes dead sockets.
@@ -1014,6 +1093,124 @@ class LanEngine {
       final ft = _fileTransfers.remove(transferId);
       ft?.chunkTimer?.cancel();
       DiagLog.add('file', 'cancelled tid=$transferId');
+      return;
+    }
+    // ---- Content-addressed storage protocol ----
+    if (t == LanternProtocol.frameContentAnnounce) {
+      final from = json['from'] as String? ?? dialPeerId ?? '';
+      final items = json['items'] as List<dynamic>? ?? [];
+      if (from.isEmpty) return;
+      for (final item in items) {
+        final m = item as Map<String, dynamic>;
+        final hash = m['hash'] as String? ?? '';
+        if (hash.isEmpty) continue;
+        await contentStore.recordPeer(hash, from);
+        // Store metadata if we don't have it yet
+        final existing = await contentStore.getContent(hash);
+        if (existing == null) {
+          await contentStore.importBytes(
+            Uint8List(0), // placeholder, no data yet
+            name: m['name'] as String? ?? 'unknown',
+            mimeType: m['mime'] as String?,
+            publishedBy: from,
+          );
+        }
+      }
+      DiagLog.add('content', 'announce from $from: ${items.length} items');
+      return;
+    }
+    if (t == LanternProtocol.frameContentRequest) {
+      final from = json['from'] as String? ?? dialPeerId ?? '';
+      final hash = json['hash'] as String? ?? '';
+      if (from.isEmpty || hash.isEmpty) return;
+      // Send pieces we have
+      final indices = await contentStore.getPieceIndices(hash);
+      DiagLog.add('content',
+          'request from $from for $hash: ${indices.length} pieces');
+      for (final idx in indices) {
+        final data = await contentStore.getPiece(hash, idx);
+        if (data == null) continue;
+        // Send piece via TCP (reliable)
+        final peer = _peers.values.where((p) => p.id == from).firstOrNull;
+        if (peer == null) break;
+        final sock = await _dial(peer);
+        if (sock == null) break;
+        try {
+          sock.add(LanternProtocol.encodeFrame({
+            't': LanternProtocol.frameContentPiece,
+            'hash': hash,
+            'idx': idx,
+            'total': indices.length,
+            'data': base64Encode(data),
+          }));
+        } catch (_) {
+          break;
+        }
+        // Small delay between pieces
+        await Future.delayed(const Duration(milliseconds: 20));
+      }
+      return;
+    }
+    if (t == LanternProtocol.frameContentPiece) {
+      final hash = json['hash'] as String? ?? '';
+      final idx = json['idx'] as int? ?? 0;
+      final total = json['total'] as int? ?? 1;
+      final dataB64 = json['data'] as String? ?? '';
+      if (hash.isEmpty || dataB64.isEmpty) return;
+      final data = base64Decode(dataB64);
+      await contentStore.storePiece(hash, idx, Uint8List.fromList(data));
+      DiagLog.add('content', 'piece $idx/$total for $hash');
+      // Check if we have all pieces
+      final have = await contentStore.getPieceIndices(hash);
+      if (have.length >= total) {
+        await contentStore.assemble(hash);
+        DiagLog.add('content', 'assembled $hash');
+        // Announce to other peers that we now have it
+        _announceContent();
+      }
+      return;
+    }
+    if (t == LanternProtocol.frameContentSearch) {
+      final query = json['query'] as String? ?? '';
+      if (query.isEmpty) return;
+      final results = await contentStore.search(query);
+      if (results.isEmpty) return;
+      final from = json['from'] as String? ?? dialPeerId ?? '';
+      if (from.isEmpty) return;
+      final peer = _peers.values.where((p) => p.id == from).firstOrNull;
+      if (peer == null) return;
+      final sock = await _dial(peer);
+      if (sock == null) return;
+      try {
+        sock.add(LanternProtocol.encodeFrame({
+          't': LanternProtocol.frameContentFound,
+          'items': results.map((r) => {
+            'hash': r['hash'],
+            'name': r['name'],
+            'size': r['size'],
+            'mime': r['mime_type'],
+          }).toList(),
+        }));
+      } catch (_) {}
+      return;
+    }
+    if (t == LanternProtocol.frameContentFound) {
+      final items = json['items'] as List<dynamic>? ?? [];
+      for (final item in items) {
+        final m = item as Map<String, dynamic>;
+        final hash = m['hash'] as String? ?? '';
+        if (hash.isEmpty) continue;
+        final existing = await contentStore.getContent(hash);
+        if (existing == null) {
+          await contentStore.importBytes(
+            Uint8List(0),
+            name: m['name'] as String? ?? 'unknown',
+            mimeType: m['mime'] as String?,
+            publishedBy: 'search',
+          );
+        }
+      }
+      DiagLog.add('content', 'found ${items.length} items');
       return;
     }
   }

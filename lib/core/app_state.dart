@@ -12,6 +12,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'compat.dart';
+import 'content_store.dart';
 import 'diag.dart';
 import 'engine.dart';
 import 'identity.dart';
@@ -21,6 +23,7 @@ import 'store.dart';
 /// App-level state: identity, profile, engine, chat summaries.
 class AppState extends ChangeNotifier with WidgetsBindingObserver {
   final ChatStore store = ChatStore();
+  final ContentStore contentStore = ContentStore();
   DeviceIdentity? identity;
   AccountIdentity? account;
   LanEngine? engine;
@@ -42,6 +45,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     final docs = await getApplicationDocumentsDirectory();
     await store.open(docs.path);
+    await contentStore.open(store.db);
     final prefs = await SharedPreferences.getInstance();
     displayName = prefs.getString('name') ?? '';
     status = prefs.getString('status') ?? 'Available';
@@ -97,6 +101,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     engine = LanEngine(
       me: identity!,
       store: store,
+      contentStore: contentStore,
       displayName: displayName,
       status: status,
     );

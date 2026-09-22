@@ -46,6 +46,14 @@ class LanternProtocol {
   static const frameFileReject = 'file_reject'; // receiver -> sender: reject
   static const frameFileCancel = 'file_cancel'; // either side: cancel transfer
 
+  // Content-addressed storage protocol
+  static const frameContentAnnounce = 'content_announce';
+  static const frameContentRequest = 'content_req';
+  static const frameContentPiece = 'content_piece';
+  static const frameContentSearch = 'content_search';
+  static const frameContentFound = 'content_found';
+  static const contentPieceSize = 256 * 1024; // 256KB per piece
+
   // Group protocol frame types
   static const frameGroupInvite = 'group_invite';
   static const frameGroupLeave = 'group_leave';
