@@ -60,16 +60,14 @@ class MeTab extends StatelessWidget {
             onChanged: (v) => s.setNotifications(v),
           ),
 
-          // Android background mode
-          if (Platform.isAndroid) ...[
-            ListTile(
-              leading: Icon(Icons.battery_saver),
-              title: Text(S.of(context).backgroundMode),
-              subtitle: Text(_bgModeLabel(s.bgMode)),
-              trailing: Icon(Icons.chevron_right),
-              onTap: () => _showBgModePicker(context, s),
-            ),
-          ],
+          // Background mode (Android + iOS)
+          ListTile(
+            leading: Icon(Icons.battery_saver),
+            title: Text(S.of(context).backgroundMode),
+            subtitle: Text(_bgModeLabel(s.bgMode)),
+            trailing: Icon(Icons.chevron_right),
+            onTap: () => _showBgModePicker(context, s),
+          ),
 
           Divider(height: 1),
 
@@ -187,7 +185,7 @@ class MeTab extends StatelessWidget {
         _bgOption(d, s, 'notification', Icons.notifications_active,
             'Notification', 'Uses a silent notification to keep app alive. Recommended for most devices.'),
         _bgOption(d, s, 'music', Icons.music_note,
-            'Silent audio', 'Plays silent audio to keep app alive. More reliable on some devices but uses slightly more battery.'),
+            'Silent audio', 'Plays silent audio to keep app alive. More reliable on some devices. Uses slightly more battery.'),
         _bgOption(d, s, 'none', Icons.battery_alert,
             'Disabled', 'App may be killed by system to save battery. Discovery stops when app is backgrounded.'),
       ],

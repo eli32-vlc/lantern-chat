@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -41,6 +42,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   // In-app notification callback (set by HomeShell)
   void Function(String senderName, String text, String chatId)? onMessage;
+
+  // iOS background keep-alive via silent audio
+  AudioPlayer? _bgPlayer;
+  bool _bgAudioActive = false;
 
   // Rate limiting
   final _sendTimes = <String, List<DateTime>>{};
@@ -113,6 +118,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     content = Content(mesh: mesh!, store: store);
     await content!.init();
 
+    // Wire: when peer discovered, auto-flush queued messages
+    mesh!.onPeerDiscovered = (peerId) {
+      msgs?.onPeerDiscovered(peerId);
+    };
+
     running = true;
     // C3: Cancel old subscriptions before creating new ones
     _peerSub?.cancel();
@@ -120,6 +130,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _peerSub = mesh!.peers.listen((p) { peers = p; notifyListeners(); });
     _evtSub = msgs!.events.listen(_onEvent);
     peers = mesh!.currentPeers;
+
+    // Flush any queued messages from previous session
+    msgs?.flushAllQueues();
+
     notifyListeners();
   }
 
@@ -144,7 +158,21 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) _onPause();
     if (state == AppLifecycleState.resumed) _onResume();
+  }
+
+  /// Save pending messages to DB before app is killed.
+  Future<void> _onPause() async {
+    DiagLog.add('lifecycle', 'paused — saving state');
+    if (msgs != null && mesh != null) {
+      await store.purgeQueue();
+      await store.cleanSeen();
+    }
+    // Start background audio on iOS to keep app alive
+    if (Platform.isIOS && bgMode != 'none') {
+      _startBgAudio();
+    }
   }
 
   Future<void> _onResume() async {
@@ -152,6 +180,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (_lastResume != null && now.difference(_lastResume!) < Duration(seconds: 5)) return;
     _lastResume = now;
     DiagLog.add('lifecycle', 'resumed');
+    // Stop background audio
+    _stopBgAudio();
     if (mesh == null || !running) {
       if (onboarded) await restartEngine();
       return;
@@ -161,7 +191,41 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       await restartEngine();
       return;
     }
+    // Flush queued messages
+    msgs?.flushAllQueues();
     notifyListeners();
+  }
+
+  /// Start silent audio to keep iOS app alive in background. to keep iOS app alive in background.
+  void _startBgAudio() {
+    if (_bgAudioActive) return;
+    _bgAudioActive = true;
+    try {
+      _bgPlayer = AudioPlayer();
+      // Play a silent audio source on loop
+      // The asset must exist in assets/ or we use a data URI
+      _bgPlayer!.setReleaseMode(ReleaseMode.loop);
+      _bgPlayer!.setVolume(0.0);
+      // Use a tiny silent WAV as a data URI
+      _bgPlayer!.play(UrlSource(
+          'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='));
+      DiagLog.add('lifecycle', 'iOS background audio started');
+    } catch (e) {
+      DiagLog.add('lifecycle', 'bg audio failed: $e');
+      _bgAudioActive = false;
+    }
+  }
+
+  /// Stop background audio.
+  void _stopBgAudio() {
+    if (!_bgAudioActive) return;
+    _bgAudioActive = false;
+    try {
+      _bgPlayer?.stop();
+      _bgPlayer?.dispose();
+      _bgPlayer = null;
+      DiagLog.add('lifecycle', 'iOS background audio stopped');
+    } catch (_) {}
   }
 
   // Events
@@ -431,6 +495,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         await const MethodChannel('com.lantern/service').invokeMethod('stopService');
       }
     }
+    if (Platform.isIOS) {
+      if (mode == 'music') {
+        _startBgAudio();
+      } else {
+        _stopBgAudio();
+      }
+    }
     notifyListeners();
   }
 
@@ -504,6 +575,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _peerSub?.cancel();
     _evtSub?.cancel();
+    _stopBgAudio();
     msgs?.stop();
     mesh?.dispose();
     super.dispose();

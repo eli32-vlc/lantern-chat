@@ -160,6 +160,24 @@ class Store {
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  /// Atomic: insert message + mark delivered in one transaction.
+  Future<void> insertAndMarkDelivered(Map<String, dynamic> row) async {
+    await db.transaction((txn) async {
+      await txn.insert('messages', row,
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      await txn.update('messages', {'delivered': 1},
+          where: 'id = ?', whereArgs: [row['id']]);
+    });
+  }
+
+  /// Atomic: insert message + refresh chat timestamp.
+  Future<void> insertIncomingMessage(Map<String, dynamic> row) async {
+    await db.transaction((txn) async {
+      await txn.insert('messages', row,
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    });
+  }
+
   Future<List<Map<String, dynamic>>> messagesFor(String chatId,
       {int limit = 200}) async {
     return db.query('messages',
@@ -335,7 +353,18 @@ class Store {
   }
 
   // ---- Queue ----
+  static const _maxQueueSize = 1000;
+
   Future<void> queueMessage(String peerId, String payload) async {
+    // Cap queue size
+    final count = await db.rawQuery('SELECT COUNT(*) c FROM msg_queue');
+    final current = (count.first['c'] as int?) ?? 0;
+    if (current >= _maxQueueSize) {
+      // Remove oldest
+      await db.rawDelete(
+          'DELETE FROM msg_queue WHERE id IN (SELECT id FROM msg_queue ORDER BY created_at ASC LIMIT ?)',
+          [current - _maxQueueSize + 1]);
+    }
     await db.insert('msg_queue', {
       'peer_id': peerId, 'payload': payload,
       'created_at': DateTime.now().millisecondsSinceEpoch,
@@ -347,6 +376,10 @@ class Store {
     return db.query('msg_queue',
         where: 'peer_id = ?', whereArgs: [peerId],
         orderBy: 'created_at ASC');
+  }
+
+  Future<List<Map<String, dynamic>>> allQueuedMessages() async {
+    return db.query('msg_queue', orderBy: 'created_at ASC');
   }
 
   Future<void> removeQueued(int id) async {
@@ -363,5 +396,29 @@ class Store {
         DateTime.now().subtract(Duration(milliseconds: maxAgeMs))
             .millisecondsSinceEpoch;
     await db.delete('msg_queue', where: 'created_at < ?', whereArgs: [cutoff]);
+  }
+
+  /// Save all pending messages from memory to DB (lifecycle kill recovery).
+  Future<void> persistPendingMessages(
+      List<Map<String, dynamic>> pending) async {
+    if (pending.isEmpty) return;
+    await db.transaction((txn) async {
+      for (final row in pending) {
+        await txn.insert('msg_queue', row,
+            conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+    });
+  }
+
+  /// Count queued messages for a peer.
+  Future<int> queueCount(String peerId) async {
+    final rows = await db.rawQuery(
+        'SELECT COUNT(*) c FROM msg_queue WHERE peer_id = ?', [peerId]);
+    return (rows.first['c'] as int?) ?? 0;
+  }
+
+  /// Remove all queued messages for a peer.
+  Future<void> clearQueue(String peerId) async {
+    await db.delete('msg_queue', where: 'peer_id = ?', whereArgs: [peerId]);
   }
 }

@@ -265,9 +265,16 @@ class Mesh {
         if (isNew) {
           DiagLog.add('mesh', 'new peer $id (${peer.name})');
         }
+        // Auto-flush queued messages for this peer
+        if (onPeerDiscovered != null) {
+          onPeerDiscovered!(id);
+        }
       }
     } catch (_) {}
   }
+
+  /// Called by Messages when peer discovered — triggers queue flush.
+  void Function(String peerId)? onPeerDiscovered;
 
   // ---- TCP ----
 

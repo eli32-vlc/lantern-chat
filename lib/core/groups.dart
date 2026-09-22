@@ -61,13 +61,31 @@ class Groups {
     for (final mid in members) {
       if (mid == mesh.device.id) continue;
       final peer = mesh.currentPeers.where((p) => p.id == mid).firstOrNull;
-      if (peer == null) continue;
+      if (peer == null) {
+        // Offline: queue for later delivery
+        final frame = {
+          't': P.payload, 'from': mesh.device.id,
+          'blob': base64Encode(sealed), 'gid': gid,
+        };
+        if (account != null) {
+          frame['sig'] = base64Encode(await account!.sign(sealed));
+          frame['sign_pub'] = await account!.pubB64;
+        }
+        await store.queueMessage(mid, jsonEncode({'queued': {
+          'kind': payload['kind'] ?? 'text',
+          'id': payload['id'],
+          'ts': payload['ts'],
+          'text': payload['text'],
+          'gid': gid,
+        }}));
+        DiagLog.add('group', 'queued msg for offline member $mid');
+        continue;
+      }
       try {
         final frame = <String, dynamic>{
           't': P.payload, 'from': mesh.device.id,
           'blob': base64Encode(sealed), 'gid': gid,
         };
-        // Sign the group message
         if (account != null) {
           frame['sig'] = base64Encode(await account!.sign(sealed));
           frame['sign_pub'] = await account!.pubB64;

@@ -328,8 +328,12 @@ class Messages {
     final msgId = json['id'] as String? ?? '';
     if (msgId.isEmpty) return;
     _pendingAck.remove(msgId);
-    await store.markDelivered(msgId);
-    DiagLog.add('proto', 'ack $msgId');
+    try {
+      await store.markDelivered(msgId);
+      DiagLog.add('proto', 'ack $msgId');
+    } catch (e) {
+      DiagLog.add('proto', 'ack error for $msgId: $e');
+    }
   }
 
   Future<void> _handleSyncReq(Map<String, dynamic> json,
@@ -404,11 +408,13 @@ class Messages {
 
   // ---- Queue flush ----
 
+  /// Flush queue for a specific peer.
   Future<void> flushQueue(String peerId) async {
     final queued = await store.queuedMessages(peerId);
     if (queued.isEmpty) return;
     final peer = mesh.currentPeers.where((p) => p.id == peerId).firstOrNull;
     if (peer == null) return;
+    DiagLog.add('queue', 'flushing ${queued.length} queued msgs for $peerId');
     for (final row in queued) {
       final id = row['id'] as int;
       final attempts = row['attempts'] as int;
@@ -419,11 +425,11 @@ class Messages {
       try {
         final json = jsonDecode(row['payload'] as String) as Map<String, dynamic>;
         if (json.containsKey('queued')) {
-          // H4: Re-encrypt with current session key
           final plain = json['queued'] as Map<String, dynamic>;
           final ok = await send(peer, plain);
           if (ok) {
             await store.removeQueued(id);
+            DiagLog.add('queue', 'flushed $id for $peerId');
           } else {
             await store.incrementQueueAttempt(id);
           }
@@ -431,6 +437,25 @@ class Messages {
       } catch (_) {
         await store.incrementQueueAttempt(id);
       }
+    }
+  }
+
+  /// Flush queues for all online peers (called on reconnect/discovery).
+  Future<void> flushAllQueues() async {
+    final allQueued = await store.allQueuedMessages();
+    if (allQueued.isEmpty) return;
+    final peerIds = allQueued.map((r) => r['peer_id'] as String).toSet();
+    for (final peerId in peerIds) {
+      await flushQueue(peerId);
+    }
+  }
+
+  /// Called when a peer is discovered. Auto-flush queue for that peer.
+  Future<void> onPeerDiscovered(String peerId) async {
+    final count = await store.queueCount(peerId);
+    if (count > 0) {
+      DiagLog.add('queue', 'peer $peerId online, flushing $count queued msgs');
+      await flushQueue(peerId);
     }
   }
 
