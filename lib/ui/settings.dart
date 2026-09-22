@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../core/app_state.dart';
@@ -72,6 +74,26 @@ class SettingsTab extends StatelessWidget {
             onTap: () => Navigator.of(context).push(MaterialPageRoute(
                 builder: (_) => QrImportScreen(state: state))),
           ),
+          if (defaultTargetPlatform == TargetPlatform.android)
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.notifications_active, size: 22),
+              title: L.txt('Background mode', size: L.body),
+              subtitle: L.muteTxt(context,
+                  'Keep discovering devices when app is closed'),
+              trailing: Switch(
+                value: true, // Always on for now
+                onChanged: (v) {
+                  if (v) {
+                    const MethodChannel('com.lantern/service')
+                        .invokeMethod('startService');
+                  } else {
+                    const MethodChannel('com.lantern/service')
+                        .invokeMethod('stopService');
+                  }
+                },
+              ),
+            ),
           ListTile(
             dense: true,
             leading: const Icon(Icons.share_outlined, size: 22),

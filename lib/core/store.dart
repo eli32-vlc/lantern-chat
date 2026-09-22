@@ -367,16 +367,6 @@ class ChatStore {
         unread: (unreadRows.first['c'] as int?) ?? 0,
       ));
     }
-    // Compat (plaintext) chats live under chat ids 'compat:<host>:<port>'
-    // with no peer row — include any that have messages.
-    final compatRows = await db.rawQuery(
-        'SELECT DISTINCT chat_id FROM messages WHERE chat_id LIKE ?',
-        ['compat:%']);
-    for (final r in compatRows) {
-      final id = r['chat_id'] as String;
-      final label = id.startsWith('compat:') ? id.substring(7) : id;
-      await addSummary(id, 'Plaintext $label');
-    }
     // Group chats: include any that exist in our DB
     final allGroups = await db.query('groups');
     for (final g in allGroups) {

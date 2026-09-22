@@ -7,7 +7,6 @@ import 'dart:typed_data';
 import 'package:nsd/nsd.dart';
 import 'package:uuid/uuid.dart';
 
-import 'compat.dart';
 import 'diag.dart';
 import 'identity.dart';
 import 'protocol.dart';
@@ -62,11 +61,6 @@ String _txtString(Uint8List? b) =>
 /// - `payload` frames are base64 AES-GCM sealed blobs.
 /// - First contact: TOFU prompt with fingerprint; stored pin in sqlite.
 /// - Changed key for a known id => untrust + surface warning.
-///
-/// Compat: [compat] (AirchatCompatServer) runs alongside on the same port
-/// family and speaks the observed plaintext framings (lines / ndjson /
-/// lenprefix-JSON) so stock AirChat apps can message back. Compat traffic
-/// is NEVER mixed into E2EE sessions — separate events, separate UI.
 class LanEngine {
   final DeviceIdentity me;
   final ChatStore store;
@@ -76,7 +70,6 @@ class LanEngine {
 
   ServerSocket? _server;
   Registration? _reg;
-  Registration? _regAirchat; // AirChat compat mDNS registration
   Discovery? _discovery;
   Timer? _prune;
   RawDatagramSocket? _udpSocket;
@@ -96,12 +89,15 @@ class LanEngine {
   /// Pending delivery acks: msgId → send time. Expired after 30s.
   final _pendingAcks = <String, DateTime>{};
   Timer? _ackTimer;
+  Timer? _healthTimer;
   /// Tracks in-progress syncs to avoid duplicates.
   final _syncing = <String>{};
   /// Sync cooldown: peerId → last sync start time.
   final _syncCooldown = <String, DateTime>{};
   /// Pending UDP acks: msgId -> pending info.
   final _pendingUdpAcks = <String, _UdpPendingAck>{};
+  /// Active file transfers: transferId -> state.
+  final _fileTransfers = <String, _FileTransferState>{};
 
   Stream<List<LanPeer>> get peers => _peerCtrl.stream;
   Stream<LanEvent> get events => _eventCtrl.stream;
@@ -176,23 +172,6 @@ class LanEngine {
       } catch (e) {
         DiagLog.add('mdns', 'register failed: $e');
       }
-      // AirChat compat registration: same port, AirChat-style TXT keys.
-      try {
-        final airchatSvc = Service(
-          name: displayName,
-          type: '_airchat._tcp',
-          port: port,
-          txt: {
-            'id': _txtBytes(me.id),
-            'name': _txtBytes(displayName),
-          },
-        );
-        _regAirchat = await register(airchatSvc);
-        DiagLog.add('mdns',
-            'registered ${airchatSvc.name} type=_airchat._tcp port=$port');
-      } catch (e) {
-        DiagLog.add('mdns', 'airchat register failed: $e');
-      }
 
       try {
         _discovery = await startDiscovery(LanternProtocol.serviceType,
@@ -217,6 +196,11 @@ class LanEngine {
       _ackTimer ??= Timer.periodic(const Duration(seconds: 10), (_) {
         final cutoff = DateTime.now().subtract(const Duration(seconds: 30));
         _pendingAcks.removeWhere((_, sent) => sent.isBefore(cutoff));
+      });
+      // Periodic socket health check — detect dead connections
+      // (e.g., after iOS sleep, network change, peer restart)
+      _healthTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
+        _checkSocketHealth();
       });
     } catch (e) {
       startError = '$e';
@@ -462,42 +446,191 @@ class LanEngine {
         packet, InternetAddress(peer.host), peer.udpPort);
   }
 
+  // ---- File transfer ----
+
+  /// Progress callback for file transfers (set by UI).
+  void Function(String transferId, double progress)? onFileProgress;
+  /// Completion callback (set by UI).
+  void Function(String transferId, bool success)? onFileComplete;
+
+  /// Offer a file to a peer. Returns transferId.
+  /// The file is not sent until the peer accepts.
+  Future<String> offerFile(LanPeer peer, String filePath,
+      {required String kind, String? text, int? durationMs}) async {
+    final transferId = 'ft-${const Uuid().v4()}';
+    final file = File(filePath);
+    if (!await file.exists()) return transferId;
+    final stat = await file.stat();
+    final fileName = filePath.split(Platform.pathSeparator).last;
+
+    final ft = _FileTransferState(
+      transferId: transferId,
+      peerId: peer.id,
+      fileName: fileName,
+      fileSize: stat.size,
+      filePath: filePath,
+      kind: kind,
+    );
+    _fileTransfers[transferId] = ft;
+
+    // Send offer frame via TCP (reliable)
+    final sock = await _dial(peer);
+    if (sock == null) {
+      _fileTransfers.remove(transferId);
+      return transferId;
+    }
+    try {
+      sock.add(LanternProtocol.encodeFrame({
+        't': LanternProtocol.frameFileOffer,
+        'from': me.id,
+        'tid': transferId,
+        'name': fileName,
+        'size': stat.size,
+        'kind': kind,
+        if (text != null) 'text': text,
+        if (durationMs != null) 'dur': durationMs,
+      }));
+      DiagLog.add('file',
+          'offered $fileName (${stat.size}B) to ${peer.id} tid=$transferId');
+    } catch (_) {
+      _fileTransfers.remove(transferId);
+    }
+    return transferId;
+  }
+
+  /// Start sending file chunks after peer accepts.
+  void _startFileSend(_FileTransferState ft) async {
+    final peer = _peers.values.where((p) => p.id == ft.peerId).firstOrNull;
+    if (peer == null) return;
+    final file = File(ft.filePath);
+    if (!await file.exists()) return;
+
+    final bytes = await file.readAsBytes();
+    const chunkSize = 48 * 1024; // 48KB chunks
+    final total = (bytes.length / chunkSize).ceil();
+
+    for (var i = 0; i < total; i++) {
+      if (ft.cancelled) break;
+      final end = ((i + 1) * chunkSize).clamp(0, bytes.length);
+      final chunk = bytes.sublist(i * chunkSize, end);
+
+      final ok = await sendTo(peer, {
+        'kind': ft.kind,
+        'id': ft.transferId,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+        'name': ft.fileName,
+        'bytes': ft.fileSize,
+        'chunk': i,
+        'chunks': total,
+        'data': base64Encode(chunk),
+      });
+
+      ft.bytesSent = end;
+      if (onFileProgress != null) {
+        onFileProgress!(ft.transferId, ft.progress);
+      }
+
+      if (!ok) {
+        DiagLog.add('file', 'chunk $i failed for ${ft.transferId}');
+        break;
+      }
+
+      // Small delay between chunks to avoid flooding
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+
+    if (!ft.cancelled) {
+      if (onFileComplete != null) {
+        onFileComplete!(ft.transferId, true);
+      }
+      DiagLog.add('file', 'sent ${ft.fileName} tid=${ft.transferId}');
+    }
+    _fileTransfers.remove(ft.transferId);
+  }
+
+  /// Cancel a file transfer.
+  void cancelFileTransfer(String transferId) {
+    final ft = _fileTransfers[transferId];
+    if (ft == null) return;
+    ft.cancelled = true;
+    ft.chunkTimer?.cancel();
+
+    // Notify peer
+    final peer = _peers.values.where((p) => p.id == ft.peerId).firstOrNull;
+    if (peer != null) {
+      _dial(peer).then((sock) {
+        try {
+          sock?.add(LanternProtocol.encodeFrame({
+            't': LanternProtocol.frameFileCancel,
+            'tid': transferId,
+          }));
+        } catch (_) {}
+      });
+    }
+    _fileTransfers.remove(transferId);
+    DiagLog.add('file', 'cancelled $transferId');
+  }
+
+  /// Verify socket health — removes dead sockets.
+  /// Called periodically and on app resume.
+  void _checkSocketHealth() {
+    final dead = <String>[];
+    for (final entry in _sockets.entries) {
+      try {
+        // Try to detect dead sockets by checking if done future completed
+        entry.value.done.then((_) {
+          // Socket closed — remove from tracking
+          if (_sockets[entry.key] == entry.value) {
+            _sockets.remove(entry.key);
+            DiagLog.add('health', 'removed dead socket for ${entry.key}');
+          }
+        }).catchError((_) {
+          if (_sockets[entry.key] == entry.value) {
+            _sockets.remove(entry.key);
+          }
+        });
+        // Also try a zero-byte write to detect broken pipe
+        entry.value.add(Uint8List(0));
+      } catch (_) {
+        dead.add(entry.key);
+      }
+    }
+    for (final id in dead) {
+      _sockets.remove(id);
+      _sessions.remove(id);
+      DiagLog.add('health', 'cleaned dead socket for $id');
+    }
+    if (dead.isNotEmpty) {
+      DiagLog.add('health', '${dead.length} dead sockets cleaned');
+    }
+  }
+
   // ---------- sockets ----------
 
   void _onInbound(Socket sock) {
     DiagLog.add('tcp',
         'inbound from ${sock.remoteAddress.address}:${sock.remotePort}');
-    CompatSniffer.route(sock, onLantern: (rawSock, prefixBytes) {
-      DiagLog.add('tcp', 'onLantern: ${prefixBytes.length}B prefix');
-      final reader = FrameReader();
-      // Replay prefix bytes (already read by sniffer) into the FrameReader.
-      for (final frame in reader.feed(Uint8List.fromList(prefixBytes))) {
-        DiagLog.add('tcp',
-            'prefix frame ${frame.length}B preview=${DiagLog.preview(frame, 120)}');
-        _onFrame(rawSock, null, frame);
-      }
-      // Now subscribe to the raw socket for subsequent data.
-      rawSock.listen((chunk) async {
-        try {
-          for (final frame in reader.feed(Uint8List.fromList(chunk))) {
-            DiagLog.add('tcp',
-                'inbound frame ${frame.length}B preview=${DiagLog.preview(frame, 120)}');
-            await _onFrame(rawSock, null, frame);
-          }
-        } catch (_) {
-          try {
-            rawSock.destroy();
-          } catch (_) {}
+    final reader = FrameReader();
+    sock.listen((chunk) async {
+      try {
+        for (final frame in reader.feed(Uint8List.fromList(chunk))) {
+          DiagLog.add('tcp',
+              'inbound frame ${frame.length}B preview=${DiagLog.preview(frame, 120)}');
+          await _onFrame(sock, null, frame);
         }
-      }, onError: (_) {
+      } catch (_) {
         try {
-          rawSock.destroy();
+          sock.destroy();
         } catch (_) {}
-      }, onDone: () {
-        try {
-          rawSock.destroy();
-        } catch (_) {}
-      });
+      }
+    }, onError: (_) {
+      try {
+        sock.destroy();
+      } catch (_) {}
+    }, onDone: () {
+      try {
+        sock.destroy();
+      } catch (_) {}
     });
   }
 
@@ -842,6 +975,46 @@ class LanEngine {
             where: 'id = ?', whereArgs: [gid]);
         DiagLog.add('group', 'key rotated for $gid');
       } catch (_) {}
+      return;
+    }
+    // ---- File transfer protocol ----
+    if (t == LanternProtocol.frameFileOffer) {
+      final from = json['from'] as String? ?? dialPeerId ?? '';
+      final transferId = json['tid'] as String? ?? '';
+      final fileName = json['name'] as String? ?? 'file';
+      final fileSize = json['size'] as int? ?? 0;
+      final fileKind = json['kind'] as String? ?? 'file';
+      if (from.isEmpty || transferId.isEmpty) return;
+      DiagLog.add('file',
+          'offer from $from: $fileName ($fileSize bytes) tid=$transferId');
+      // Auto-accept for now (could add UI prompt later)
+      try {
+        sock.add(LanternProtocol.encodeFrame({
+          't': LanternProtocol.frameFileAccept,
+          'tid': transferId,
+        }));
+      } catch (_) {}
+      return;
+    }
+    if (t == LanternProtocol.frameFileAccept) {
+      final transferId = json['tid'] as String? ?? '';
+      final ft = _fileTransfers[transferId];
+      if (ft == null) return;
+      DiagLog.add('file', 'accepted tid=$transferId, starting send');
+      _startFileSend(ft);
+      return;
+    }
+    if (t == LanternProtocol.frameFileReject) {
+      final transferId = json['tid'] as String? ?? '';
+      _fileTransfers.remove(transferId);
+      DiagLog.add('file', 'rejected tid=$transferId');
+      return;
+    }
+    if (t == LanternProtocol.frameFileCancel) {
+      final transferId = json['tid'] as String? ?? '';
+      final ft = _fileTransfers.remove(transferId);
+      ft?.chunkTimer?.cancel();
+      DiagLog.add('file', 'cancelled tid=$transferId');
       return;
     }
   }
@@ -1235,6 +1408,8 @@ class LanEngine {
     _prune = null;
     _ackTimer?.cancel();
     _ackTimer = null;
+    _healthTimer?.cancel();
+    _healthTimer = null;
     // Cancel all pending UDP acks
     for (final pending in _pendingUdpAcks.values) {
       pending.retryTimer?.cancel();
@@ -1257,12 +1432,6 @@ class LanEngine {
         await unregister(_reg!);
       } catch (_) {}
       _reg = null;
-    }
-    if (_regAirchat != null) {
-      try {
-        await unregister(_regAirchat!);
-      } catch (_) {}
-      _regAirchat = null;
     }
     try {
       await _server?.close();
@@ -1304,4 +1473,28 @@ class _UdpPendingAck {
     required this.data,
     required this.attempts,
   });
+}
+
+/// Tracks an active file transfer.
+class _FileTransferState {
+  final String transferId;
+  final String peerId;
+  final String fileName;
+  final int fileSize;
+  final String filePath;
+  final String kind;
+  bool cancelled = false;
+  int bytesSent = 0;
+  Timer? chunkTimer;
+
+  _FileTransferState({
+    required this.transferId,
+    required this.peerId,
+    required this.fileName,
+    required this.fileSize,
+    required this.filePath,
+    required this.kind,
+  });
+
+  double get progress => fileSize > 0 ? bytesSent / fileSize : 0;
 }

@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
 import 'chat.dart';
-import 'compat_chat.dart';
 import 'group_screens.dart';
 import 'onboarding.dart';
 import 'ptt.dart';
@@ -36,17 +35,10 @@ class _HomeShellState extends State<HomeShell> {
       );
       return;
     }
-    // Compat (plaintext) chats open the compat page; E2EE peers open ChatPage.
     // Push on the tab's own navigator (NOT rootNavigator): each
     // CupertinoTabView owns a navigator, and rootNavigator pushes from
     // inside a tab break the tab scaffold on iOS 16 (white screen).
-    final compat = AppState.isCompatChat(peerId);
-    final page = compat
-        ? CompatChatStoreScope(
-            state: widget.state,
-            child: CompatChatPage(chatId: peerId, title: name),
-          )
-        : ChatPage(state: widget.state, peerId: peerId, peerName: name);
+    final page = ChatPage(state: widget.state, peerId: peerId, peerName: name);
     Navigator.of(context).push(
       _cupertino
           ? CupertinoPageRoute(builder: (_) => page)

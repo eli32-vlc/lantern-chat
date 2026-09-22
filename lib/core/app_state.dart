@@ -10,14 +10,14 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
-import 'compat.dart';
+import 'diag.dart';
 import 'engine.dart';
 import 'identity.dart';
 import 'protocol.dart';
 import 'store.dart';
 
 /// App-level state: identity, profile, engine, chat summaries.
-class AppState extends ChangeNotifier {
+class AppState extends ChangeNotifier with WidgetsBindingObserver {
   final ChatStore store = ChatStore();
   DeviceIdentity? identity;
   AccountIdentity? account;
@@ -26,6 +26,7 @@ class AppState extends ChangeNotifier {
   String status = 'Available';
   bool onboarded = false;
   bool engineUp = false;
+  DateTime? _lastResume;
 
   List<LanPeer> peers = [];
   List<ChatSummary> chats = [];
@@ -36,6 +37,7 @@ class AppState extends ChangeNotifier {
   LanPeer? trustRequest;
 
   Future<void> init() async {
+    WidgetsBinding.instance.addObserver(this);
     final docs = await getApplicationDocumentsDirectory();
     await store.open(docs.path);
     final prefs = await SharedPreferences.getInstance();
@@ -122,9 +124,6 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     });
     _evtSub = engine!.events.listen(_onEvent);
-    // Plaintext compat server: stock AirChat apps inbound → stored under
-    // 'compat:<host>:<port>' chats, surfaced in the chat list.
-    AirchatCompatServer.instance.attachToStore(store, refreshChats);
     await refreshChats();
     notifyListeners();
   }
@@ -225,34 +224,58 @@ class AppState extends ChangeNotifier {
     await startEngine();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _onResume();
+    }
+  }
+
+  /// Called when app resumes from background (iOS sleep/wake, Android doze).
+  /// Verifies socket health and restarts discovery if needed.
+  Future<void> _onResume() async {
+    final now = DateTime.now();
+    // Debounce: ignore if resumed less than 5s ago
+    if (_lastResume != null &&
+        now.difference(_lastResume!) < const Duration(seconds: 5)) {
+      return;
+    }
+    _lastResume = now;
+    DiagLog.add('lifecycle', 'app resumed — checking engine health');
+
+    if (engine == null || !engineUp) {
+      if (onboarded) {
+        DiagLog.add('lifecycle', 'engine not running, restarting');
+        await restartEngine();
+      }
+      return;
+    }
+
+    // Verify TCP server is still listening
+    try {
+      // Quick health check: if port is0, server is dead
+      if (engine!.port == 0) {
+        DiagLog.add('lifecycle', 'TCP server dead, restarting engine');
+        await restartEngine();
+        return;
+      }
+    } catch (_) {
+      DiagLog.add('lifecycle', 'engine health check failed, restarting');
+      await restartEngine();
+      return;
+    }
+
+    // Force mDNS re-scan
+    DiagLog.add('lifecycle', 'refreshing peers');
+    await refreshPeers();
+    notifyListeners();
+  }
+
   LanPeer? peerById(String id) {
     for (final p in peers) {
       if (p.id == id) return p;
     }
     return null;
-  }
-
-  static bool isCompatChat(String chatId) => chatId.startsWith('compat:');
-
-  /// Send on a plaintext compat chat (AirChat-style device).
-  Future<bool> sendCompatText(String chatId, String text) async {
-    final id =
-        'compat-${DateTime.now().microsecondsSinceEpoch}';
-    final ts = DateTime.now().millisecondsSinceEpoch;
-    final ok =
-        await AirchatCompatServer.instance.sendText(chatId, text);
-    await store.insertMessage(ChatMessage(
-      id: id,
-      chatId: chatId,
-      senderId: identity!.id,
-      kind: LanternMsgKind.text,
-      text: text,
-      ts: ts,
-      outgoing: true,
-      delivered: ok,
-    ));
-    await refreshChats();
-    return ok;
   }
 
   Future<bool> sendText(String peerId, String text) async {
@@ -280,7 +303,7 @@ class AppState extends ChangeNotifier {
     return ok;
   }
 
-  /// Send a file in 48KB raw chunks (each chunk is its own sealed payload).
+  /// Send a file using the file transfer protocol (offer → accept → chunks).
   Future<bool> sendFile(
     String peerId,
     String path,
@@ -290,31 +313,14 @@ class AppState extends ChangeNotifier {
   }) async {
     final peer = peerById(peerId);
     if (peer == null || engine == null) return false;
-    final bytes = await File(path).readAsBytes();
     final fname = path.split(Platform.pathSeparator).last;
+    final file = File(path);
+    if (!await file.exists()) return false;
+    final stat = await file.stat();
     final id = engine!.messageId();
     final ts = DateTime.now().millisecondsSinceEpoch;
-    const chunkSize = 48 * 1024;
-    final total = (bytes.length / chunkSize).ceil().clamp(1, 1 << 20);
-    var ok = true;
-    for (var i = 0; i < total; i++) {
-      final end = ((i + 1) * chunkSize).clamp(0, bytes.length);
-      final part = bytes.sublist(i * chunkSize, end);
-      final b64 = base64Encode(part);
-      final sent = await engine!.sendTo(peer, {
-        'kind': kind.wire,
-        'id': id,
-        'ts': ts,
-        'name': fname,
-        'bytes': bytes.length,
-        'chunk': i,
-        'chunks': total,
-        'data': b64,
-        if (text case final t) 'text': t,
-        if (durationMs case final d) 'dur': d,
-      });
-      if (!sent) ok = false;
-    }
+
+    // Insert message into DB immediately (shows in chat)
     await store.insertMessage(ChatMessage(
       id: id,
       chatId: peerId,
@@ -323,14 +329,21 @@ class AppState extends ChangeNotifier {
       text: text,
       filePath: path,
       fileName: fname,
-      fileBytes: bytes.length,
+      fileBytes: stat.size,
       durationMs: durationMs,
       ts: ts,
       outgoing: true,
-      delivered: false, // ack will set to true when peer confirms
+      delivered: false,
     ));
     await refreshChats();
-    return ok;
+
+    // Offer file via file transfer protocol (non-blocking)
+    final transferId = await engine!.offerFile(
+      peer, path,
+      kind: kind.wire, text: text, durationMs: durationMs,
+    );
+    DiagLog.add('file', 'offered $fname tid=$transferId');
+    return true; // optimistic; progress via callbacks
   }
 
   // ---- Account export / import (QR key transfer) ----
@@ -493,7 +506,9 @@ class AppState extends ChangeNotifier {
   }
 
   @override
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _peerSub?.cancel();
     _evtSub?.cancel();
     _trustSub?.cancel();

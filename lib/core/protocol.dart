@@ -40,6 +40,12 @@ class LanternProtocol {
   static const udpTypeTyping = 0x20; // typing indicator
   static const pttSampleRate = 16000; // 16kHz mono
 
+  // File transfer protocol
+  static const frameFileOffer = 'file_offer'; // sender -> receiver: offer file
+  static const frameFileAccept = 'file_accept'; // receiver -> sender: accept
+  static const frameFileReject = 'file_reject'; // receiver -> sender: reject
+  static const frameFileCancel = 'file_cancel'; // either side: cancel transfer
+
   // Group protocol frame types
   static const frameGroupInvite = 'group_invite';
   static const frameGroupLeave = 'group_leave';
