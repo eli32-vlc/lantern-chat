@@ -2,12 +2,13 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../core/app_state.dart';
+import '../core/protocol.dart';
 import 'chat.dart';
-import 'group_screens.dart';
+import 'group_chat.dart';
+import 'l10n.dart';
 import 'onboarding.dart';
-import 'ptt.dart';
-import 'settings.dart';
-import 'tabs.dart';
+import 'people.dart';
+import 'me.dart';
 import 'theme.dart';
 
 class HomeShell extends StatefulWidget {
@@ -21,29 +22,11 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
 
-  bool get _cupertino => L.cupertino(context);
-
-  void _openChat(String peerId, String name) {
-    // Group chats
-    if (peerId.startsWith('grp-')) {
-      Navigator.of(context).push(
-        _cupertino
-            ? CupertinoPageRoute(builder: (_) => GroupChatPage(
-                state: widget.state, groupId: peerId, groupName: name))
-            : MaterialPageRoute(builder: (_) => GroupChatPage(
-                state: widget.state, groupId: peerId, groupName: name)),
-      );
-      return;
-    }
-    // Push on the tab's own navigator (NOT rootNavigator): each
-    // CupertinoTabView owns a navigator, and rootNavigator pushes from
-    // inside a tab break the tab scaffold on iOS 16 (white screen).
-    final page = ChatPage(state: widget.state, peerId: peerId, peerName: name);
-    Navigator.of(context).push(
-      _cupertino
-          ? CupertinoPageRoute(builder: (_) => page)
-          : MaterialPageRoute(builder: (_) => page),
-    );
+  void _openChat(String id, String name, {bool group = false}) {
+    final page = group
+        ? GroupChatPage(state: widget.state, groupId: id, groupName: name)
+        : ChatPage(state: widget.state, peerId: id, peerName: name);
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
   }
 
   @override
@@ -54,176 +37,93 @@ class _HomeShellState extends State<HomeShell> {
         if (!widget.state.onboarded) {
           return OnboardingPage(state: widget.state);
         }
-        if (_cupertino) return _ios(context);
-        return _android(context);
-      },
-    );
-  }
-
-  // ---- iOS: one CupertinoTabScaffold, each tab owns its CupertinoTabView.
-  // Every tab body is wrapped in Material(type: transparency) so Material
-  // widgets (ListTile, RefreshIndicator, Dismissible, sheets) always have
-  // a Material ancestor — without it iOS 16 renders text with yellow
-  // underlines and ink effects white-screen. ----
-  Widget _ios(BuildContext context) {
-    return Stack(
-      children: [
-        CupertinoTabScaffold(
-          tabBar: CupertinoTabBar(
-            currentIndex: _tab,
-            onTap: (i) => setState(() => _tab = i),
-            items: const [
-              BottomNavigationBarItem(
-                  icon: Icon(CupertinoIcons.chat_bubble_2), label: 'Chats'),
-              BottomNavigationBarItem(
-                  icon: Icon(CupertinoIcons.person_2), label: 'Peers'),
-              BottomNavigationBarItem(
-                  icon: Icon(CupertinoIcons.mic), label: 'PTT'),
-              BottomNavigationBarItem(
-                  icon: Icon(CupertinoIcons.settings), label: 'Settings'),
+        return Scaffold(
+          body: IndexedStack(
+            index: _tab,
+            children: [
+              ChatsTab(state: widget.state, onOpen: _openChat),
+              PeopleTab(state: widget.state, onOpen: _openChat),
+              MeTab(state: widget.state),
             ],
           ),
-          tabBuilder: (context, i) {
-            final title = switch (i) {
-              0 => 'Chats',
-              1 => 'Peers',
-              2 => 'PTT',
-              _ => 'Settings'
-            };
-            Widget tabBody;
-            switch (i) {
-              case 0:
-                tabBody = ChatsTab(state: widget.state, onOpen: _openChat);
-              case 1:
-                tabBody = PeersTab(state: widget.state, onOpen: _openChat);
-              case 2:
-                tabBody = PttTab(state: widget.state);
-              default:
-                tabBody = SettingsTab(state: widget.state);
-            }
-            return CupertinoTabView(
-              builder: (context) => CupertinoPageScaffold(
-                backgroundColor: CupertinoColors.systemGroupedBackground,
-                navigationBar:
-                    CupertinoNavigationBar(middle: Text(title)),
-                // Material ancestor kills the iOS-16 yellow-underline text
-                // and gives RefreshIndicator/Dismissible a canvas.
-                child: Material(
-                  type: MaterialType.transparency,
-                  child: SafeArea(child: tabBody),
-                ),
-              ),
-            );
-          },
-        ),
-        if (widget.state.trustRequest != null)
-          _trustBanner(context, widget.state.trustRequest!),
-      ],
-    );
-  }
-
-  // ---- Android: Material 3 NavigationBar ----
-  Widget _android(BuildContext context) {
-    final title = switch (_tab) {
-      0 => 'Chats',
-      1 => 'Peers',
-      2 => 'PTT',
-      _ => 'Settings'
-    };
-    final body = switch (_tab) {
-      0 => ChatsTab(state: widget.state, onOpen: _openChat),
-      1 => PeersTab(state: widget.state, onOpen: _openChat),
-      2 => PttTab(state: widget.state),
-      _ => SettingsTab(state: widget.state),
-    };
-    return Stack(
-      children: [
-        Scaffold(
-          appBar: AppBar(
-            title: Text(title,
-                style: const TextStyle(
-                    fontSize: L.title, fontWeight: FontWeight.w600)),
-            centerTitle: false,
-          ),
-          body: SafeArea(child: body),
           bottomNavigationBar: NavigationBar(
             selectedIndex: _tab,
             onDestinationSelected: (i) => setState(() => _tab = i),
-            destinations: const [
+            destinations: [
               NavigationDestination(
-                  icon: Icon(Icons.forum_outlined),
-                  selectedIcon: Icon(Icons.forum),
-                  label: 'Chats'),
+                icon: Icon(Icons.chat_bubble_outline),
+                selectedIcon: Icon(Icons.chat_bubble),
+                label: S.of(context).chats,
+              ),
               NavigationDestination(
-                  icon: Icon(Icons.people_outline),
-                  selectedIcon: Icon(Icons.people),
-                  label: 'Peers'),
+                icon: Icon(Icons.people_outline),
+                selectedIcon: Icon(Icons.people),
+                label: S.of(context).people,
+              ),
               NavigationDestination(
-                  icon: Icon(Icons.mic_outlined),
-                  selectedIcon: Icon(Icons.mic),
-                  label: 'PTT'),
-              NavigationDestination(
-                  icon: Icon(Icons.settings_outlined),
-                  selectedIcon: Icon(Icons.settings),
-                  label: 'Settings'),
+                icon: Icon(Icons.person_outline),
+                selectedIcon: Icon(Icons.person),
+                label: S.of(context).me,
+              ),
             ],
           ),
-        ),
-        if (widget.state.trustRequest != null)
-          _trustBanner(context, widget.state.trustRequest!),
-      ],
+        );
+      },
     );
   }
+}
 
-  Widget _trustBanner(BuildContext context, trust) {
-    // Material ancestor is provided by the _android Scaffold; on iOS the
-    // banner sits above the CupertinoTabScaffold so wrap it explicitly.
-    final card = Material(
-      elevation: 6,
-      borderRadius: BorderRadius.circular(L.radius),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Row(
-          children: [
-            const Icon(Icons.shield_outlined, size: 20),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text('${trust.name} found. Verify?',
-                  style: const TextStyle(
-                      fontSize: L.body, decoration: TextDecoration.none),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis),
-            ),
-            TextButton(
-              style: TextButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+/// Chats tab — all conversations in one list.
+class ChatsTab extends StatelessWidget {
+  final AppState state;
+  final void Function(String id, String name, {bool group}) onOpen;
+  const ChatsTab({super.key, required this.state, required this.onOpen});
+
+  @override
+  Widget build(BuildContext context) {
+    final chats = state.chats;
+    return Scaffold(
+      appBar: AppBar(title: Text(S.of(context).chats)),
+      body: chats.isEmpty
+          ? Center(child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.chat_bubble_outline, size: 48, color: Colors.grey),
+                SizedBox(height: 12),
+                Text(S.of(context).noChats, style: TextStyle(color: Colors.grey)),
+                SizedBox(height: 4),
+                Text(S.of(context).goToPeople, style: TextStyle(color: Colors.grey, fontSize: 13)),
+              ],
+            ))
+          : RefreshIndicator(
+              onRefresh: () async {},
+              child: ListView.separated(
+                itemCount: chats.length,
+                separatorBuilder: (_, __) => Divider(height: 1, indent: 72),
+                itemBuilder: (context, i) {
+                  final c = chats[i];
+                  return ListTile(
+                    leading: CircleAvatar(
+                      child: Text(c.name.isNotEmpty ? c.name[0].toUpperCase() : '?'),
+                    ),
+                    title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text(c.lastText ?? S.of(context).sayHello,
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                    trailing: c.unread > 0
+                        ? Container(
+                            padding: EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.primary,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text('${c.unread}', style: TextStyle(color: Colors.white, fontSize: 12)),
+                          )
+                        : null,
+                    onTap: () => onOpen(c.id, c.name, group: c.isGroup),
+                  );
+                },
               ),
-              onPressed: widget.state.dismissTrust,
-              child: L.txt('Later', size: L.body),
             ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                textStyle: const TextStyle(
-                    fontSize: L.body, fontWeight: FontWeight.w600),
-              ),
-              onPressed: () {
-                widget.state.dismissTrust();
-                showCupertinoOrMaterialSheet(
-                    context, TrustSheet(peer: trust, state: widget.state));
-              },
-              child: L.txt('Verify', size: L.body, weight: FontWeight.w600),
-            ),
-          ],
-        ),
-      ),
     );
-    return Positioned(left: 12, right: 12, bottom: 92, child: card);
   }
 }

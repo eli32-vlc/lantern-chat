@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/app_state.dart';
 import 'ui/home.dart';
+import 'ui/l10n.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,6 +36,16 @@ class LanternApp extends StatelessWidget {
               seedColor: Colors.teal, brightness: Brightness.dark),
           useMaterial3: true,
         ),
+        localizationsDelegates: [
+          const SDelegate(),
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [
+          Locale('en'),
+          Locale('zh'),
+        ],
         home: HomeShell(state: state),
       ),
     );

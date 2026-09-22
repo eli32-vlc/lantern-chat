@@ -1,86 +1,73 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
-/// Wire protocol for Lantern v1. Must stay tiny and LAN-only.
-///
-/// Transport: plain TCP per peer (one ServerSocket per device).
-/// Every frame: 4-byte big-endian length + UTF-8 JSON.
-/// After `hello` exchange, `payload` frames carry AES-GCM ciphertext.
-class LanternProtocol {
+// Lantern wire protocol constants. No logic, just numbers.
+class P {
+  // Network
   static const serviceType = '_lantern._tcp';
-  static const serviceNamePrefix = 'lantern-';
+  static const namePrefix = 'lantern-';
   static const protoVersion = 1;
+  static const appVersion = '0.3.0';
+  static const appBuild = 3;
   static const tcpBacklog = 16;
-  static const frameMaxBytes = 8 * 1024 * 1024; // 8MB per frame (file chunks are 64KB)
+  static const frameMax = 8 * 1024 * 1024;
+  static const pieceSize = 256 * 1024;
 
-  // TXT record keys broadcast over mDNS (all plaintext, non-sensitive except pubkey)
+  // mDNS TXT keys
   static const txtId = 'id';
   static const txtName = 'nm';
   static const txtStatus = 'st';
   static const txtPort = 'pt';
-  static const txtPub = 'pk'; // base64 raw 32-byte X25519 public key
-  static const txtHandle = 'ah'; // cryptographic short handle, e.g. '#AB3K-7MPR'
-  static const txtAccountId = 'aid'; // account UUID (shared across devices)
+  static const txtPub = 'pk';
+  static const txtHandle = 'ah';
+  static const txtAccountId = 'aid';
+  static const txtSignPub = 'spk';
+  static const txtUdpPort = 'up';
   static const txtVer = 'v';
-  static const txtUdpPort = 'up'; // UDP port for fast payload delivery
+  static const txtAppVer = 'av';
+  static const txtAppBuild = 'ab';
 
-  // UDP transport constants
-  // UDP header: [msgIdLen 1B][msgId NB][type 1B][length 2B]
-  // msgId is full UUID (36 bytes), not truncated.
-  static const udpMaxPayload = 1400; // max payload per UDP packet (fits in MTU)
-  static const udpTypeData = 0x01; // encrypted payload
-  static const udpTypeAck = 0x02; // delivery acknowledgment
-  static const udpMaxRetries = 10; // retry attempts before TCP fallback
-  static const udpRetryMs = 300; // ms between retries
+  // Frame types
+  static const hello = 'hello';
+  static const payload = 'payload';
+  static const ack = 'ack';
+  static const syncReq = 'sync_req';
+  static const syncMsgs = 'sync_msgs';
+  static const groupInvite = 'group_invite';
+  static const groupLeave = 'group_leave';
+  static const groupKeyRotate = 'group_key_rotate';
+  static const fileOffer = 'file_offer';
+  static const fileAccept = 'file_accept';
+  static const fileReject = 'file_reject';
+  static const fileCancel = 'file_cancel';
+  static const contentAnnounce = 'content_announce';
+  static const contentReq = 'content_req';
+  static const contentPiece = 'content_piece';
+  static const contentSearch = 'content_search';
+  static const contentFound = 'content_found';
 
-  // PTT (Push-to-Talk) protocol
-  static const udpTypePttStart = 0x10; // voice stream start
-  static const udpTypePttData = 0x11; // voice chunk
-  static const udpTypePttStop = 0x12; // voice stream end
-  static const udpTypeTyping = 0x20; // typing indicator
-  static const pttSampleRate = 16000; // 16kHz mono
+  // UDP sub-types (first byte of payload)
+  static const udpData = 0x01;
+  static const udpAck = 0x02;
+  static const udpTyping = 0x20;
+  static const udpPttStart = 0x10;
+  static const udpPttData = 0x11;
+  static const udpPttStop = 0x12;
+  static const udpPttPresence = 0x13;
 
-  // File transfer protocol
-  static const frameFileOffer = 'file_offer'; // sender -> receiver: offer file
-  static const frameFileAccept = 'file_accept'; // receiver -> sender: accept
-  static const frameFileReject = 'file_reject'; // receiver -> sender: reject
-  static const frameFileCancel = 'file_cancel'; // either side: cancel transfer
+  // UDP settings
+  static const udpMaxPayload = 1400;
+  static const udpMaxRetries = 10;
+  static const udpRetryMs = 300;
 
-  // Group protocol frame types
-  static const frameGroupInvite = 'group_invite';
-  static const frameGroupLeave = 'group_leave';
-  static const frameGroupKeyRotate = 'group_key_rotate';
-
-  static Uint8List encodeFrame(Map<String, dynamic> json) {
-    final body = utf8.encode(jsonEncode(json));
-    final out = Uint8List(4 + body.length);
-    final view = ByteData.view(out.buffer);
-    view.setUint32(0, body.length, Endian.big);
-    out.setRange(4, out.length, body);
-    return out;
-  }
-}
-
-/// Logical message kinds stored in sqlite and rendered in UI.
-enum LanternMsgKind { text, image, video, file, voice, callEvent, system }
-
-extension LanternMsgKindX on LanternMsgKind {
-  String get wire => switch (this) {
-        LanternMsgKind.text => 'text',
-        LanternMsgKind.image => 'image',
-        LanternMsgKind.video => 'video',
-        LanternMsgKind.file => 'file',
-        LanternMsgKind.voice => 'voice',
-        LanternMsgKind.callEvent => 'call',
-        LanternMsgKind.system => 'sys',
-      };
-  static LanternMsgKind fromWire(String? s) => switch (s) {
-        'image' => LanternMsgKind.image,
-        'video' => LanternMsgKind.video,
-        'file' => LanternMsgKind.file,
-        'voice' => LanternMsgKind.voice,
-        'call' => LanternMsgKind.callEvent,
-        'sys' => LanternMsgKind.system,
-        _ => LanternMsgKind.text,
-      };
+  // Timing
+  static const peerPruneMinutes = 5;
+  static const peerPruneCheckSec = 30;
+  static const healthCheckSec = 30;
+  static const ackTimeoutSec = 30;
+  static const ackCheckSec = 10;
+  static const syncCooldownSec = 30;
+  static const typingThrottleSec = 2;
+  static const maxQueueAttempts = 5;
+  static const queueMaxAgeHours = 1;
+  static const maxFileSize = 50 * 1024 * 1024;
+  static const rateLimitPerSec = 10;
+  static const contentRequestPerMin = 5;
 }
