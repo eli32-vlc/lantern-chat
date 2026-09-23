@@ -342,7 +342,8 @@ class Store {
   Future<List<Map<String, dynamic>>> searchContent(String q) async {
     final esc = q.replaceAll('%', '\\%').replaceAll('_', '\\_');
     return db.query('content',
-        where: 'name LIKE ?', whereArgs: ['%$esc%'],
+        where: 'name LIKE ? OR hash LIKE ?',
+        whereArgs: ['%$esc%', '%$esc%'],
         orderBy: 'published_at DESC');
   }
 

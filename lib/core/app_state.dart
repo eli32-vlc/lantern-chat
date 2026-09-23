@@ -196,20 +196,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Start silent audio to keep iOS app alive in background. to keep iOS app alive in background.
+  /// Start silent audio to keep iOS/Android app alive in background.
   void _startBgAudio() {
     if (_bgAudioActive) return;
     _bgAudioActive = true;
     try {
       _bgPlayer = AudioPlayer();
-      // Play a silent audio source on loop
-      // The asset must exist in assets/ or we use a data URI
       _bgPlayer!.setReleaseMode(ReleaseMode.loop);
       _bgPlayer!.setVolume(0.0);
-      // Use a tiny silent WAV as a data URI
-      _bgPlayer!.play(UrlSource(
-          'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='));
-      DiagLog.add('lifecycle', 'iOS background audio started');
+      _bgPlayer!.play(AssetSource('silent.wav'));
+      DiagLog.add('lifecycle', 'background audio started');
     } catch (e) {
       DiagLog.add('lifecycle', 'bg audio failed: $e');
       _bgAudioActive = false;

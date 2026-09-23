@@ -279,7 +279,7 @@ class _En implements _Strings {
   @override final notificationsDesc = 'Show alerts when messages arrive';
   @override final backgroundMode = 'Background mode';
   @override final distributedWeb = 'Shared Files';
-  @override final distributedWebDesc = 'Share files directly with nearby devices. Files are stored on each device that downloads them — the more people have a file, the faster it is for others.';
+  @override final distributedWebDesc = 'Share files with nearby devices. More copies = faster downloads.';
   @override final howItWorks = 'How it works';
   @override final myFiles = 'My files';
   @override final noPublished = 'No files shared yet. Tap + to share.';
@@ -365,7 +365,7 @@ class _Zh implements _Strings {
   @override final notificationsDesc = '收到消息时提醒你';
   @override final backgroundMode = '后台运行';
   @override final distributedWeb = '共享文件';
-  @override final distributedWebDesc = '和附近的人直接分享文件。文件会存在每个下载过的人的手机上——下载的人越多，别人获取越快。';
+  @override final distributedWebDesc = '和附近的人分享文件。下载的人越多，获取越快。';
   @override final howItWorks = '使用方法';
   @override final myFiles = '我的文件';
   @override final noPublished = '还没有分享文件。点右下角的 + 分享。';
