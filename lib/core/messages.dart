@@ -181,21 +181,6 @@ class Messages {
           if (sender != null) _eventCtrl.add(MsgEvent.typing(sender));
           return;
         }
-        if (sub == P.udpPttStart || sub == P.udpPttData || sub == P.udpPttStop || sub == P.udpPttPresence) {
-          final sender = _findPeerByHost(rf.udpAddr!.address);
-          if (sender == null) return;
-          if (sub == P.udpPttStart) {
-            _eventCtrl.add(MsgEvent.pttStart(sender));
-          } else if (sub == P.udpPttData && payload.length > 1) {
-            _eventCtrl.add(MsgEvent.pttData(sender, payload.sublist(1)));
-          } else if (sub == P.udpPttStop) {
-            _eventCtrl.add(MsgEvent.pttStop(sender));
-          } else if (sub == P.udpPttPresence && payload.length > 1) {
-            final ch = utf8.decode(payload.sublist(1), allowMalformed: true);
-            _eventCtrl.add(MsgEvent.pttPresence(sender, ch));
-          }
-          return;
-        }
       }
 
       // Encrypted payload
@@ -475,31 +460,6 @@ class Messages {
     mesh.sendUdp(peer, [P.udpTyping]);
   }
 
-  // ---- PTT ----
-
-  void sendPttStart(Peer peer, String channel) {
-    final chBytes = utf8.encode(channel);
-    mesh.sendUdp(peer, [P.udpPttStart, ...chBytes]);
-  }
-
-  void sendPttData(Peer peer, List<int> audioChunk) {
-    // Split into sub-1300 byte pieces to avoid UDP fragmentation
-    const maxChunk = 1300;
-    for (var i = 0; i < audioChunk.length; i += maxChunk) {
-      final end = (i + maxChunk).clamp(0, audioChunk.length);
-      mesh.sendUdp(peer, [P.udpPttData, ...audioChunk.sublist(i, end)]);
-    }
-  }
-
-  void sendPttStop(Peer peer) {
-    mesh.sendUdp(peer, [P.udpPttStop]);
-  }
-
-  void sendPttPresence(Peer peer, String channel) {
-    final chBytes = utf8.encode(channel);
-    mesh.sendUdp(peer, [P.udpPttPresence, ...chBytes]);
-  }
-
   // ---- Helpers ----
 
   void _checkAcks() {
@@ -534,20 +494,10 @@ class MsgEvent {
   final String type;
   final String? peerId;
   final Map<String, dynamic>? payload;
-  final String? channel;
-  final List<int>? audioData;
 
-  MsgEvent._(this.type, {this.peerId, this.payload, this.channel, this.audioData});
+  MsgEvent._(this.type, {this.peerId, this.payload});
   factory MsgEvent.payload(String peerId, Map<String, dynamic> data) =>
       MsgEvent._('payload', peerId: peerId, payload: data);
   factory MsgEvent.typing(String peerId) =>
       MsgEvent._('typing', peerId: peerId);
-  factory MsgEvent.pttStart(String peerId) =>
-      MsgEvent._('ptt_start', peerId: peerId);
-  factory MsgEvent.pttData(String peerId, List<int> data) =>
-      MsgEvent._('ptt_data', peerId: peerId, audioData: data);
-  factory MsgEvent.pttStop(String peerId) =>
-      MsgEvent._('ptt_stop', peerId: peerId);
-  factory MsgEvent.pttPresence(String peerId, String channel) =>
-      MsgEvent._('ptt_presence', peerId: peerId, channel: channel);
 }

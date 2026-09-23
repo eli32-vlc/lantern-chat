@@ -47,13 +47,6 @@ class P {
   static const udpData = 0x01;
   static const udpAck = 0x02;
   static const udpTyping = 0x20;
-  static const udpPttStart = 0x10;
-  static const udpPttData = 0x11;
-  static const udpPttStop = 0x12;
-  static const udpPttPresence = 0x13;
-
-  // PTT
-  static const pttDefaultChannel = 'general';
 
   // UDP settings
   static const udpMaxPayload = 1400;
