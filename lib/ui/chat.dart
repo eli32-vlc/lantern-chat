@@ -163,9 +163,9 @@ class _ChatPageState extends State<ChatPage> {
               onTap: () async {
                 Navigator.pop(context);
                 final r = await FilePicker.pickFiles();
-                if (r != null && r.files.isNotEmpty && r.files.first.path != null) {
+                if (r.isNotEmpty && r.first.path != null) {
                   await widget.state.sendFile(
-                      widget.peerId, r.files.first.path!, LanternMsgKind.file);
+                      widget.peerId, r.first.path!, LanternMsgKind.file);
                   _reload();
                 }
               },
