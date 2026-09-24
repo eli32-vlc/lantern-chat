@@ -12,6 +12,9 @@ class LanternProtocol {
   static const protoVersion = 1;
   static const tcpBacklog = 16;
   static const frameMaxBytes = 8 * 1024 * 1024; // 8MB per frame (file chunks are 64KB)
+  static const fileChunkSize = 48 * 1024;
+  static const maxFileChunks = 20000;
+  static const maxFileBytes = 1024 * 1024 * 1024;
 
   // TXT record keys broadcast over mDNS (all plaintext, non-sensitive except pubkey)
   static const txtId = 'id';

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
@@ -10,8 +11,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'background_audio.dart';
 import 'compat.dart';
 import 'engine.dart';
+import 'file_transfer.dart';
 import 'identity.dart';
 import 'protocol.dart';
 import 'store.dart';
@@ -32,12 +35,16 @@ class AppState extends ChangeNotifier {
   StreamSubscription? _peerSub;
   StreamSubscription? _evtSub;
   StreamSubscription? _trustSub;
+  Future<void> _eventChain = Future.value();
+  IncomingFileTransfer? _incomingFiles;
 
   LanPeer? trustRequest;
 
   Future<void> init() async {
     final docs = await getApplicationDocumentsDirectory();
     await store.open(docs.path);
+    _incomingFiles = IncomingFileTransfer(Directory('${docs.path}/inbox'));
+    unawaited(_incomingFiles!.cleanupStale());
     final prefs = await SharedPreferences.getInstance();
     displayName = prefs.getString('name') ?? '';
     status = prefs.getString('status') ?? 'Available';
@@ -63,6 +70,8 @@ class AppState extends ChangeNotifier {
     if (onboarded && displayName.isNotEmpty) {
       await startEngine();
     }
+    // Initialize background audio service (silent audio keep-alive for iOS)
+    await BackgroundAudioService.instance.init();
     notifyListeners();
   }
 
@@ -105,12 +114,29 @@ class AppState extends ChangeNotifier {
       engine!.startError = '$e';
     }
     engineUp = true;
-    // Start Android foreground service to keep discovery alive in background.
-    if (defaultTargetPlatform == TargetPlatform.android) {
+    // Start background service to keep discovery alive.
+    // Android: foreground service with notification + wake lock.
+    // iOS: background fetch interval for periodic mDNS re-scan.
+    if (defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS) {
       try {
         await const MethodChannel('com.lantern/service')
             .invokeMethod('startService');
       } catch (_) {}
+    }
+    // Listen for iOS background fetch callbacks
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      const MethodChannel('com.lantern/service')
+          .setMethodCallHandler((call) async {
+        if (call.method == 'onBackgroundFetch') {
+          // Re-scan mDNS peers and flush queued messages
+          try {
+            await engine?.refreshDiscovery();
+            peers = engine?.currentPeers ?? peers;
+            notifyListeners();
+          } catch (_) {}
+        }
+      });
     }
     _peerSub = engine!.peers.listen((p) {
       peers = p;
@@ -121,7 +147,11 @@ class AppState extends ChangeNotifier {
       trustRequest = p;
       notifyListeners();
     });
-    _evtSub = engine!.events.listen(_onEvent);
+    _evtSub = engine!.events.listen((event) {
+      // Preserve event order. Concurrent chunk handling can otherwise race
+      // writes, duplicate suppression, and completion checks.
+      _eventChain = _eventChain.then((_) => _onEvent(event));
+    });
     // Plaintext compat server: stock AirChat apps inbound → stored under
     // 'compat:<host>:<port>' chats, surfaced in the chat list.
     AirchatCompatServer.instance.attachToStore(store, refreshChats);
@@ -130,77 +160,211 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _onEvent(LanEvent e) async {
-    final kind = e.json['kind'] as String? ?? 'text';
-    final msgId = e.json['id'] as String? ?? engine!.messageId();
-    final ts = e.json['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch;
-    final gid = e.json['gid'] as String?; // group message
+    final json = e.json;
+    final kind = _asString(json['kind']) ?? 'text';
+    final msgId = _asString(json['id']);
+    final actualMsgId = (msgId != null && msgId.isNotEmpty) ? msgId : engine!.messageId();
+    final ts = _asInt(json['ts']) ?? DateTime.now().millisecondsSinceEpoch;
+    final gid = _asString(json['gid']);
     final chatId = gid ?? e.peerId;
-    final m = ChatMessage(
-      id: msgId,
-      chatId: chatId,
-      senderId: e.peerId,
-      kind: LanternMsgKindX.fromWire(kind),
-      text: e.json['text'] as String?,
-      filePath: null,
-      fileName: e.json['name'] as String?,
-      fileBytes: e.json['bytes'] as int?,
-      durationMs: e.json['dur'] as int?,
-      ts: ts,
-      outgoing: false,
-    );
-    // file chunks arrive as separate payloads; assemble in chat screen via store watcher
-    if (e.json['chunk'] != null) {
-      await _ingestChunk(e.peerId, e.json);
+
+    // Duplicate detection: skip if this message ID already exists in the store.
+    final existing = await store.getMessage(actualMsgId);
+    if (existing != null) {
+      if (json['chunk'] != null && actualMsgId.isNotEmpty) {
+        await engine?.acknowledgeEvent(e, success: true, complete: true);
+      } else {
+        await engine?.acknowledgeEvent(e, success: true);
+      }
       return;
     }
-    await store.insertMessage(m);
+
+    // file chunks arrive as separate payloads; assemble via _ingestChunk
+    if (json['chunk'] != null) {
+      await _ingestChunk(e);
+      return;
+    }
+
+    // Non-chunked file data (single-shot transfer): save to disk
+    final rawData = json['data'];
+    if (rawData is String && rawData.isNotEmpty && kind != 'text') {
+      try {
+        final bytes = base64Decode(rawData);
+        final declaredBytes = _asInt(json['bytes']);
+        if (declaredBytes != null && declaredBytes != bytes.length) {
+          await store.insertMessage(ChatMessage(
+            id: actualMsgId,
+            chatId: chatId,
+            senderId: e.peerId,
+            kind: LanternMsgKindX.fromWire(kind),
+            text: _asString(json['text']),
+            filePath: null,
+            fileName: _asString(json['name']),
+            fileBytes: bytes.length,
+            durationMs: _asInt(json['dur']),
+            ts: ts,
+            outgoing: false,
+          ));
+          await engine?.acknowledgeEvent(e, success: false);
+          return;
+        }
+        final docs = await getApplicationDocumentsDirectory();
+        final dir = Directory('${docs.path}/inbox/${_safeIncomingFileName(e.peerId)}');
+        await dir.create(recursive: true);
+        final fname = _asString(json['name']) ?? actualMsgId;
+        final safeName = _safeIncomingFileName(fname);
+        final f = File('${dir.path}/$actualMsgId-$safeName');
+        final part = File('${f.path}.part');
+        await part.writeAsBytes(bytes, flush: true);
+        if (await f.exists()) await f.delete();
+        await part.rename(f.path);
+        await store.insertMessage(ChatMessage(
+          id: actualMsgId,
+          chatId: chatId,
+          senderId: e.peerId,
+          kind: LanternMsgKindX.fromWire(kind),
+          text: _asString(json['text']),
+          filePath: f.path,
+          fileName: fname,
+          fileBytes: bytes.length,
+          durationMs: _asInt(json['dur']),
+          ts: ts,
+          outgoing: false,
+        ));
+      } catch (_) {
+        await store.insertMessage(ChatMessage(
+          id: actualMsgId,
+          chatId: chatId,
+          senderId: e.peerId,
+          kind: LanternMsgKindX.fromWire(kind),
+          text: _asString(json['text']),
+          filePath: null,
+          fileName: _asString(json['name']),
+          fileBytes: _asInt(json['bytes']),
+          durationMs: _asInt(json['dur']),
+          ts: ts,
+          outgoing: false,
+        ));
+        await engine?.acknowledgeEvent(e, success: false);
+        return;
+      }
+    } else {
+      await store.insertMessage(ChatMessage(
+        id: actualMsgId,
+        chatId: chatId,
+        senderId: e.peerId,
+        kind: LanternMsgKindX.fromWire(kind),
+        text: _asString(json['text']),
+        filePath: null,
+        fileName: _asString(json['name']),
+        fileBytes: _asInt(json['bytes']),
+        durationMs: _asInt(json['dur']),
+        ts: ts,
+        outgoing: false,
+      ));
+    }
     await refreshChats();
     notifyListeners();
+    await engine?.acknowledgeEvent(e, success: true);
   }
 
-  /// Chunked file receiver state: chatId/msgId -> parts
-  final _chunks = <String, Map<int, List<int>>>{};
-  final _chunkMeta = <String, Map<String, dynamic>>{};
+  /// Safe JSON int extraction — handles int, double, String.
+  static int? _asInt(dynamic v) {
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    if (v is String) return int.tryParse(v);
+    return null;
+  }
 
-  Future<void> _ingestChunk(String peerId, Map<String, dynamic> j) async {
-    final msgId = j['id'] as String;
-    final idx = j['chunk'] as int;
-    final total = j['chunks'] as int;
-    final data = j['data'] as String; // base64 of raw file bytes
-    final key = '$peerId/$msgId';
-    _chunks.putIfAbsent(key, () => {})[idx] = base64Decode(data);
-    _chunkMeta[key] = j;
-    if (_chunks[key]!.length == total) {
-      final parts = <int>[];
-      for (var i = 0; i < total; i++) {
-        parts.addAll(_chunks[key]![i]!);
-      }
-      final docs = await getApplicationDocumentsDirectory();
-      final dir = Directory('${docs.path}/inbox/$peerId');
-      await dir.create(recursive: true);
-      final fname = (j['name'] as String?) ?? msgId;
-      final f = File('${dir.path}/$fname');
-      await f.writeAsBytes(parts);
+  /// Safe JSON string extraction.
+  static String? _asString(dynamic v) {
+    if (v is String) return v;
+    return null;
+  }
+
+  static String _safeIncomingFileName(String name) {
+    var safe = name.replaceAll(RegExp(r'[/\\:\r\n]'), '_').trim();
+    if (safe.isEmpty) safe = 'file';
+    if (safe.length > 160) safe = safe.substring(0, 160);
+    return safe;
+  }
+
+  Future<void> _ingestChunk(LanEvent e) async {
+    final json = e.json;
+    final peerId = e.peerId;
+    final msgId = _asString(json['id']);
+    final index = _asInt(json['chunk']);
+    final total = _asInt(json['chunks']);
+    final encoded = _asString(json['data']);
+    final declaredBytes = _asInt(json['bytes']);
+
+    if (msgId == null ||
+        index == null ||
+        total == null ||
+        total <= 0 ||
+        index < 0 ||
+        index >= total ||
+        total > LanternProtocol.maxFileChunks ||
+        declaredBytes == null ||
+        declaredBytes < 0 ||
+        declaredBytes > LanternProtocol.maxFileBytes) {
+      await engine?.acknowledgeEvent(e, success: false);
+      return;
+    }
+    if (encoded == null || (encoded.isEmpty && !(total == 1 && declaredBytes == 0))) {
+      await engine?.acknowledgeEvent(e, success: false);
+      return;
+    }
+
+    final bytes = base64Decode(encoded);
+    final transfer = _incomingFiles;
+    if (transfer == null) {
+      await engine?.acknowledgeEvent(e, success: false);
+      return;
+    }
+    final result = await transfer.accept(
+      peerId: peerId,
+      msgId: msgId,
+      index: index,
+      total: total,
+      bytes: bytes,
+      metadata: json,
+    );
+    if (!result.transportAccepted) {
+      await engine?.acknowledgeEvent(e, success: false);
+      return;
+    }
+    if (!result.complete) {
+      await engine?.acknowledgeEvent(e, success: true);
+      return;
+    }
+
+    if (!result.success) {
+      await engine?.acknowledgeEvent(e, success: false, complete: true);
+      return;
+    }
+
+    final existing = await store.getMessage(msgId);
+    if (existing == null) {
       await store.insertMessage(ChatMessage(
         id: msgId,
         chatId: peerId,
         senderId: peerId,
-        kind: LanternMsgKindX.fromWire(j['kind'] as String? ?? 'file'),
-        text: j['text'] as String?,
-        filePath: f.path,
-        fileName: fname,
-        fileBytes: parts.length,
-        durationMs: j['dur'] as int?,
-        ts: j['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+        kind: LanternMsgKindX.fromWire(_asString(json['kind']) ?? 'file'),
+        text: result.text,
+        filePath: result.finalPath,
+        fileName: result.fileName,
+        fileBytes: result.fileBytes,
+        durationMs: result.durationMs,
+        ts: result.timestamp ?? DateTime.now().millisecondsSinceEpoch,
         outgoing: false,
       ));
-      _chunks.remove(key);
-      _chunkMeta.remove(key);
       await refreshChats();
       notifyListeners();
     }
+    await transfer.discardTransfer(peerId: peerId, msgId: msgId);
+    await engine?.acknowledgeEvent(e, success: true, complete: true);
   }
-
   Future<void> refreshChats() async {
     chats = await store.chatSummaries();
     notifyListeners();
@@ -280,7 +444,8 @@ class AppState extends ChangeNotifier {
     return ok;
   }
 
-  /// Send a file in 48KB raw chunks (each chunk is its own sealed payload).
+  /// Send a file in durable 48KB chunks. The source is copied into app-owned
+  /// storage, hashed while copying, then transmitted from that durable copy.
   Future<bool> sendFile(
     String peerId,
     String path,
@@ -289,48 +454,89 @@ class AppState extends ChangeNotifier {
     int? durationMs,
   }) async {
     final peer = peerById(peerId);
-    if (peer == null || engine == null) return false;
-    final bytes = await File(path).readAsBytes();
-    final fname = path.split(Platform.pathSeparator).last;
-    final id = engine!.messageId();
-    final ts = DateTime.now().millisecondsSinceEpoch;
-    const chunkSize = 48 * 1024;
-    final total = (bytes.length / chunkSize).ceil().clamp(1, 1 << 20);
-    var ok = true;
-    for (var i = 0; i < total; i++) {
-      final end = ((i + 1) * chunkSize).clamp(0, bytes.length);
-      final part = bytes.sublist(i * chunkSize, end);
-      final b64 = base64Encode(part);
-      final sent = await engine!.sendTo(peer, {
-        'kind': kind.wire,
-        'id': id,
-        'ts': ts,
-        'name': fname,
-        'bytes': bytes.length,
-        'chunk': i,
-        'chunks': total,
-        'data': b64,
-        if (text case final t) 'text': t,
-        if (durationMs case final d) 'dur': d,
-      });
-      if (!sent) ok = false;
+    final activeEngine = engine;
+    if (peer == null || activeEngine == null) return false;
+
+    final source = File(path);
+    if (!await source.exists()) return false;
+    final size = await source.length();
+    if (size > LanternProtocol.maxFileBytes) return false;
+
+    final docs = await getApplicationDocumentsDirectory();
+    final outbox = Directory('${docs.path}/outbox');
+    await outbox.create(recursive: true);
+    final id = activeEngine.messageId();
+    final rawName = _safeIncomingFileName(path.split(Platform.pathSeparator).last);
+    final stored = File('${outbox.path}/$id-$rawName');
+    final copy = await copyAndHash(source, stored);
+    if (copy.bytes != size) {
+      return false;
     }
+
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final total = size == 0
+        ? 1
+        : (size / LanternProtocol.fileChunkSize).ceil();
+    if (total > LanternProtocol.maxFileChunks) {
+      return false;
+    }
+
     await store.insertMessage(ChatMessage(
       id: id,
       chatId: peerId,
       senderId: identity!.id,
       kind: kind,
       text: text,
-      filePath: path,
-      fileName: fname,
-      fileBytes: bytes.length,
+      filePath: stored.path,
+      fileName: rawName,
+      fileBytes: size,
       durationMs: durationMs,
       ts: ts,
       outgoing: true,
-      delivered: false, // ack will set to true when peer confirms
+      delivered: false,
     ));
+
+    var allQueued = true;
+    for (var i = 0; i < total; i++) {
+      final start = i * LanternProtocol.fileChunkSize;
+      final end = size == 0
+          ? 0
+          : (start + LanternProtocol.fileChunkSize).clamp(0, size);
+      final part = size == 0
+          ? <int>[]
+          : await _readFileRange(stored, start, end);
+      final queued = await activeEngine.sendTo(peer, {
+        'kind': kind.wire,
+        'id': id,
+        '_ack': '$id:c${i.toString().padLeft(6, '0')}',
+        'ts': ts,
+        'name': rawName,
+        'bytes': size,
+        'sha256': copy.hash,
+        'chunk': i,
+        'chunks': total,
+        'data': base64Encode(part),
+        if (text case final value) 'text': value,
+        if (durationMs case final value) 'dur': value,
+      });
+      if (!queued) allQueued = false;
+    }
+
     await refreshChats();
-    return ok;
+    return allQueued;
+  }
+
+  static Future<List<int>> _readFileRange(
+    File file,
+    int start,
+    int endExclusive,
+  ) async {
+    if (start >= endExclusive) return const [];
+    final output = BytesBuilder(copy: false);
+    await for (final chunk in file.openRead(start, endExclusive)) {
+      output.add(chunk);
+    }
+    return output.takeBytes();
   }
 
   // ---- Account export / import (QR key transfer) ----
@@ -498,6 +704,7 @@ class AppState extends ChangeNotifier {
     _evtSub?.cancel();
     _trustSub?.cancel();
     engine?.dispose();
+    unawaited(BackgroundAudioService.instance.dispose());
     super.dispose();
   }
 }

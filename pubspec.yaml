@@ -50,6 +50,9 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
+  assets:
+    - assets/audio/silence.wav
+
 flutter_launcher_icons:
   android: true
   ios: true

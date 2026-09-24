@@ -8,6 +8,7 @@ import 'group_screens.dart';
 import 'onboarding.dart';
 import 'ptt.dart';
 import 'settings.dart';
+import 'shared_files.dart';
 import 'tabs.dart';
 import 'theme.dart';
 
@@ -86,6 +87,8 @@ class _HomeShellState extends State<HomeShell> {
               BottomNavigationBarItem(
                   icon: Icon(CupertinoIcons.person_2), label: 'Peers'),
               BottomNavigationBarItem(
+                  icon: Icon(CupertinoIcons.folder), label: 'Files'),
+              BottomNavigationBarItem(
                   icon: Icon(CupertinoIcons.mic), label: 'PTT'),
               BottomNavigationBarItem(
                   icon: Icon(CupertinoIcons.settings), label: 'Settings'),
@@ -95,7 +98,8 @@ class _HomeShellState extends State<HomeShell> {
             final title = switch (i) {
               0 => 'Chats',
               1 => 'Peers',
-              2 => 'PTT',
+              2 => 'Files',
+              3 => 'PTT',
               _ => 'Settings'
             };
             Widget tabBody;
@@ -105,6 +109,8 @@ class _HomeShellState extends State<HomeShell> {
               case 1:
                 tabBody = PeersTab(state: widget.state, onOpen: _openChat);
               case 2:
+                tabBody = SharedFilesTab(state: widget.state);
+              case 3:
                 tabBody = PttTab(state: widget.state);
               default:
                 tabBody = SettingsTab(state: widget.state);
@@ -135,13 +141,15 @@ class _HomeShellState extends State<HomeShell> {
     final title = switch (_tab) {
       0 => 'Chats',
       1 => 'Peers',
-      2 => 'PTT',
+      2 => 'Files',
+      3 => 'PTT',
       _ => 'Settings'
     };
     final body = switch (_tab) {
       0 => ChatsTab(state: widget.state, onOpen: _openChat),
       1 => PeersTab(state: widget.state, onOpen: _openChat),
-      2 => PttTab(state: widget.state),
+      2 => SharedFilesTab(state: widget.state),
+      3 => PttTab(state: widget.state),
       _ => SettingsTab(state: widget.state),
     };
     return Stack(
@@ -166,6 +174,10 @@ class _HomeShellState extends State<HomeShell> {
                   icon: Icon(Icons.people_outline),
                   selectedIcon: Icon(Icons.people),
                   label: 'Peers'),
+              NavigationDestination(
+                  icon: Icon(Icons.folder_outlined),
+                  selectedIcon: Icon(Icons.folder),
+                  label: 'Files'),
               NavigationDestination(
                   icon: Icon(Icons.mic_outlined),
                   selectedIcon: Icon(Icons.mic),

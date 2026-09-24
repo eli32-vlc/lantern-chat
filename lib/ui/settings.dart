@@ -1,20 +1,61 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_state.dart';
+import '../core/background_audio.dart';
 import 'diag_page.dart';
 import 'onboarding.dart';
 import 'qr_screens.dart';
 import 'theme.dart';
 
-class SettingsTab extends StatelessWidget {
+class SettingsTab extends StatefulWidget {
   final AppState state;
   const SettingsTab({super.key, required this.state});
 
   @override
+  State<SettingsTab> createState() => _SettingsTabState();
+}
+
+class _SettingsTabState extends State<SettingsTab> {
+  String _bgMode = 'keepAlive';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBgMode();
+  }
+
+  Future<void> _loadBgMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() => _bgMode = prefs.getString('bgMode') ?? 'keepAlive');
+    }
+  }
+
+  Future<void> _setBgMode(String mode) async {
+    // Update the background audio service (starts/stops silent audio loop)
+    await BackgroundAudioService.instance.setMode(mode);
+    if (mounted) setState(() => _bgMode = mode);
+  }
+
+  String _bgModeLabel(String mode) => switch (mode) {
+        'keepAlive' => 'Keep Alive',
+        'musicMode' => 'Music Mode',
+        'off' => 'Off',
+        _ => mode,
+      };
+
+  /// Android: foreground service with notification (like Termux).
+  /// iOS: background fetch / silent audio keep-alive.
+  bool get _isAndroid => Platform.isAndroid;
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: state,
+      animation: widget.state,
       builder: (context, _) => ListView(
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
@@ -25,19 +66,19 @@ class SettingsTab extends StatelessWidget {
                 CircleAvatar(
                   radius: 30,
                   child: L.txt(
-                    state.displayName.isEmpty
+                    widget.state.displayName.isEmpty
                         ? '?'
-                        : state.displayName[0].toUpperCase(),
+                        : widget.state.displayName[0].toUpperCase(),
                     size: 22,
                   ),
                 ),
                 const SizedBox(height: 6),
-                L.txt(state.displayName,
+                L.txt(widget.state.displayName,
                     size: L.title, weight: FontWeight.w600),
-                L.muteTxt(context, state.status),
-                if (state.identity != null)
+                L.muteTxt(context, widget.state.status),
+                if (widget.state.identity != null)
                   FutureBuilder<String>(
-                    future: state.identity!.handle,
+                    future: widget.state.identity!.handle,
                     builder: (context, snap) {
                       if (!snap.hasData || snap.data!.isEmpty) {
                         return const SizedBox.shrink();
@@ -62,7 +103,7 @@ class SettingsTab extends StatelessWidget {
             title: L.txt('Link another device', size: L.body),
             subtitle: L.muteTxt(context, 'Show QR code to link a second device'),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => QrExportScreen(state: state))),
+                builder: (_) => QrExportScreen(state: widget.state))),
           ),
           ListTile(
             dense: true,
@@ -70,8 +111,41 @@ class SettingsTab extends StatelessWidget {
             title: L.txt('Import account', size: L.body),
             subtitle: L.muteTxt(context, 'Scan QR from another device'),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => QrImportScreen(state: state))),
+                builder: (_) => QrImportScreen(state: widget.state))),
           ),
+          if (_isAndroid)
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.notifications_active, size: 22),
+              title: L.txt('Background service', size: L.body),
+              subtitle: L.muteTxt(context, 'Always on — shows notification while running'),
+              onTap: () {
+                showDialog(
+                  context: context,
+                  builder: (d) => AlertDialog(
+                    title: L.txt('Background service', size: L.title),
+                    content: L.txt(
+                      'Lantern runs a foreground service with a persistent notification '
+                      'to stay alive in background, similar to Termux. '
+                      'This is the most reliable way to keep LAN discovery running on Android.',
+                      size: L.body),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(d),
+                        child: L.txt('Got it', size: L.body)),
+                    ],
+                  ),
+                );
+              },
+            )
+          else
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.phone_android, size: 22),
+              title: L.txt('Background mode', size: L.body),
+              subtitle: L.muteTxt(context, _bgModeLabel(_bgMode)),
+              onTap: () => _showBgModePicker(context),
+            ),
           ListTile(
             dense: true,
             leading: const Icon(Icons.share_outlined, size: 22),
@@ -103,9 +177,49 @@ class SettingsTab extends StatelessWidget {
     );
   }
 
+  void _showBgModePicker(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: L.txt('Background mode', size: L.title, weight: FontWeight.w600),
+            ),
+            for (final mode in ['keepAlive', 'musicMode', 'off'])
+              RadioListTile<String>(
+                value: mode,
+                groupValue: _bgMode,
+                onChanged: (v) {
+                  if (v != null) _setBgMode(v);
+                  Navigator.pop(ctx);
+                },
+                title: L.txt(_bgModeLabel(mode), size: L.body),
+                subtitle: L.muteTxt(context, switch (mode) {
+                  'keepAlive' => 'Background fetch + mDNS re-scan',
+                  'musicMode' => 'Plays silent audio — most reliable on iOS',
+                  'off' => 'App suspends when backgrounded',
+                  _ => '',
+                }),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: L.muteTxt(context,
+                'Music Mode uses silent audio to prevent iOS from suspending the app. '
+                'Keep Alive uses background fetch (less reliable but no audio session).',
+                align: TextAlign.start),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _editProfile(BuildContext context) {
-    final name = TextEditingController(text: state.displayName);
-    var status = state.status;
+    final name = TextEditingController(text: widget.state.displayName);
+    var status = widget.state.status;
     showDialog(
       context: context,
       builder: (d) => AlertDialog(
@@ -139,7 +253,7 @@ class SettingsTab extends StatelessWidget {
             onPressed: () async {
               if (name.text.trim().isEmpty) return;
               Navigator.pop(d);
-              await state.updateProfile(name.text, status);
+              await widget.state.updateProfile(name.text, status);
             },
             child: L.txt('Save', size: L.body, weight: FontWeight.w600),
           ),

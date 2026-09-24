@@ -132,7 +132,7 @@ class ChatStore {
     final path = p.join(dir, 'lantern.db');
     _db = await openDatabase(
       path,
-      version: 6,
+      version: 7,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE peers(
@@ -179,9 +179,17 @@ class ChatStore {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             peer_id TEXT NOT NULL,
             frame BLOB NOT NULL,
+            ack_id TEXT NOT NULL,
+            logical_id TEXT NOT NULL,
+            mark_delivered INTEGER NOT NULL DEFAULT 1,
             created_at INTEGER NOT NULL,
+            last_attempt_at INTEGER NOT NULL DEFAULT 0,
+            acked_at INTEGER NOT NULL DEFAULT 0,
             attempts INTEGER NOT NULL DEFAULT 0
           )''');
+        await db.execute('''
+          CREATE UNIQUE INDEX idx_msg_queue_ack
+          ON msg_queue(peer_id, ack_id)''');
       },
       onUpgrade: (db, oldV, newV) async {
         if (oldV < 2) {
@@ -226,6 +234,24 @@ class ChatStore {
               created_at INTEGER NOT NULL,
               attempts INTEGER NOT NULL DEFAULT 0
             )''');
+        }
+        if (oldV < 7) {
+          // v6 rows had no transport ACK identity and were deleted as soon as
+          // socket.flush() returned, so they cannot be migrated safely.
+          await db.delete('msg_queue');
+          await db.execute(
+              'ALTER TABLE msg_queue ADD COLUMN ack_id TEXT');
+          await db.execute(
+              'ALTER TABLE msg_queue ADD COLUMN logical_id TEXT');
+          await db.execute(
+              'ALTER TABLE msg_queue ADD COLUMN mark_delivered INTEGER NOT NULL DEFAULT 1');
+          await db.execute(
+              'ALTER TABLE msg_queue ADD COLUMN last_attempt_at INTEGER NOT NULL DEFAULT 0');
+          await db.execute(
+              'ALTER TABLE msg_queue ADD COLUMN acked_at INTEGER NOT NULL DEFAULT 0');
+          await db.execute('''
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_queue_ack
+            ON msg_queue(peer_id, ack_id)''');
         }
       },
     );
@@ -285,6 +311,12 @@ class ChatStore {
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  /// Get a single message by ID (for duplicate detection).
+  Future<ChatMessage?> getMessage(String id) async {
+    final rows = await db.query('messages', where: 'id = ?', whereArgs: [id]);
+    return rows.isEmpty ? null : ChatMessage.fromRow(rows.first);
+  }
+
   Future<List<ChatMessage>> messagesFor(String chatId,
       {int limit = 200}) async {
     final rows = await db.query('messages',
@@ -306,6 +338,35 @@ class ChatStore {
       });
     }, onCancel: () => t?.cancel());
     return ctrl.stream;
+  }
+
+  /// Get all outgoing file messages (images, files, videos, voice).
+  Future<List<ChatMessage>> outgoingFiles({int limit = 200}) async {
+    final rows = await db.query('messages',
+        where: "outgoing = 1 AND kind IN ('image','file','video','voice')",
+        orderBy: 'ts DESC',
+        limit: limit);
+    return rows.reversed.map(ChatMessage.fromRow).toList();
+  }
+
+  /// Look up one shared file by message ID.
+  Future<ChatMessage?> fileMessageById(String id) async {
+    final rows = await db.query(
+      'messages',
+      where: "id = ? AND kind IN ('image','file','video','voice')",
+      whereArgs: [id],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : ChatMessage.fromRow(rows.first);
+  }
+
+  /// Get all incoming file messages (images, files, videos, voice).
+  Future<List<ChatMessage>> incomingFiles({int limit = 200}) async {
+    final rows = await db.query('messages',
+        where: "outgoing = 0 AND kind IN ('image','file','video','voice')",
+        orderBy: 'ts DESC',
+        limit: limit);
+    return rows.reversed.map(ChatMessage.fromRow).toList();
   }
 
   Future<List<ChatSummary>> chatSummaries() async {
@@ -462,14 +523,29 @@ class ChatStore {
     return rows.isNotEmpty;
   }
 
-  // ---- message queue (store-and-forward) ----
-  Future<void> queueMessage(String peerId, Uint8List frame) async {
-    await db.insert('msg_queue', {
-      'peer_id': peerId,
-      'frame': frame,
-      'created_at': DateTime.now().millisecondsSinceEpoch,
-      'attempts': 0,
-    });
+  // ---- message queue (ACK-tracked store-and-forward) ----
+  Future<void> queueMessage(
+    String peerId,
+    Uint8List frame, {
+    required String ackId,
+    required String logicalId,
+    required bool markDelivered,
+  }) async {
+    await db.insert(
+      'msg_queue',
+      {
+        'peer_id': peerId,
+        'frame': frame,
+        'ack_id': ackId,
+        'logical_id': logicalId,
+        'mark_delivered': markDelivered ? 1 : 0,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'last_attempt_at': 0,
+        'acked_at': 0,
+        'attempts': 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
   }
 
   Future<List<Map<String, dynamic>>> queuedMessages(String peerId) async {
@@ -477,20 +553,82 @@ class ChatStore {
         where: 'peer_id = ?', whereArgs: [peerId], orderBy: 'created_at ASC');
   }
 
+  /// Return queued frames that are due for another delivery attempt.
+  Future<List<Map<String, dynamic>>> queuedMessagesDue(
+    String peerId,
+    DateTime now, {
+    int limit = 250,
+  }) async {
+    return db.query(
+      'msg_queue',
+      where: 'peer_id = ? AND acked_at = 0 '
+          'AND (last_attempt_at = 0 OR last_attempt_at <= ?)',
+      whereArgs: [peerId, now.millisecondsSinceEpoch],
+      orderBy: 'created_at ASC',
+      limit: limit,
+    );
+  }
+
+  Future<Map<String, dynamic>?> queuedMessageForAck(
+    String peerId,
+    String ackId,
+  ) async {
+    final rows = await db.query(
+      'msg_queue',
+      where: 'peer_id = ? AND ack_id = ?',
+      whereArgs: [peerId, ackId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first;
+  }
+
   Future<void> removeQueuedMessage(int id) async {
     await db.delete('msg_queue', where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<void> incrementQueueAttempt(int id) async {
+  Future<void> markQueueAck(int id, bool acked) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
     await db.rawUpdate(
-        'UPDATE msg_queue SET attempts = attempts + 1 WHERE id = ?', [id]);
+      'UPDATE msg_queue SET acked_at = ?, last_attempt_at = ? WHERE id = ?',
+      [acked ? now : 0, now, id],
+    );
   }
 
-  Future<void> purgeOldQueue({int maxAgeMs = 3600000}) async {
-    final cutoff =
-        DateTime.now().subtract(Duration(milliseconds: maxAgeMs)).millisecondsSinceEpoch;
+  Future<void> removeQueuedMessagesForLogical(String logicalId) async {
     await db.delete('msg_queue',
-        where: 'created_at < ?', whereArgs: [cutoff]);
+        where: 'logical_id = ?', whereArgs: [logicalId]);
+  }
+
+  Future<void> requeueLogicalMessages(String logicalId) async {
+    await db.rawUpdate(
+      'UPDATE msg_queue SET acked_at = 0, last_attempt_at = 0 '
+      'WHERE logical_id = ?',
+      [logicalId],
+    );
+  }
+
+  Future<void> markQueueAttempt(int id) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.rawUpdate(
+      'UPDATE msg_queue SET attempts = attempts + 1, last_attempt_at = ? WHERE id = ?',
+      [now, id],
+    );
+  }
+
+  Future<void> markQueueAttemptForAck(String peerId, String ackId) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.rawUpdate(
+      'UPDATE msg_queue SET last_attempt_at = ? '
+      'WHERE peer_id = ? AND ack_id = ?',
+      [now, peerId, ackId],
+    );
+  }
+
+  Future<void> purgeOldQueue({int maxAgeMs = 7 * 24 * 60 * 60 * 1000}) async {
+    final cutoff = DateTime.now()
+        .subtract(Duration(milliseconds: maxAgeMs))
+        .millisecondsSinceEpoch;
+    await db.delete('msg_queue', where: 'created_at < ?', whereArgs: [cutoff]);
   }
 
   // ---- search ----

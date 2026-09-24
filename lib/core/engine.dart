@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:nsd/nsd.dart';
 import 'package:uuid/uuid.dart';
 
@@ -47,13 +48,29 @@ class LanPeer {
 class LanEvent {
   final String peerId;
   final Map<String, dynamic> json;
+  final String? ackId;
+  final String? udpHost;
+  final int? udpPort;
 
-  LanEvent(this.peerId, this.json);
+  LanEvent(
+    this.peerId,
+    this.json, {
+    this.ackId,
+    this.udpHost,
+    this.udpPort,
+  });
 }
 
 Uint8List _txtBytes(String s) => Uint8List.fromList(utf8.encode(s));
 String _txtString(Uint8List? b) =>
     b == null ? '' : utf8.decode(b, allowMalformed: true);
+
+int? _asInt(dynamic value) {
+  if (value is int) return value;
+  if (value is double) return value.toInt();
+  if (value is String) return int.tryParse(value);
+  return null;
+}
 
 /// Owns: TCP server, mDNS register+discovery, per-peer sessions.
 ///
@@ -100,8 +117,9 @@ class LanEngine {
   final _syncing = <String>{};
   /// Sync cooldown: peerId → last sync start time.
   final _syncCooldown = <String, DateTime>{};
-  /// Pending UDP acks: msgId -> pending info.
+  /// Pending UDP acks: transportAckId -> pending info.
   final _pendingUdpAcks = <String, _UdpPendingAck>{};
+  final _queueFlushing = <String>{};
 
   Stream<List<LanPeer>> get peers => _peerCtrl.stream;
   Stream<LanEvent> get events => _eventCtrl.stream;
@@ -213,6 +231,9 @@ class LanEngine {
             DateTime.now().subtract(const Duration(seconds: 60));
         _peers.removeWhere((_, p) => p.lastSeen.isBefore(cutoff));
         if (!_peerCtrl.isClosed) _peerCtrl.add(currentPeers);
+        for (final peerId in _peers.keys.toList(growable: false)) {
+          unawaited(_flushQueue(peerId));
+        }
       });
       _ackTimer ??= Timer.periodic(const Duration(seconds: 10), (_) {
         final cutoff = DateTime.now().subtract(const Duration(seconds: 30));
@@ -389,32 +410,104 @@ class LanEngine {
     }
   }
 
-  /// Flush queued messages for a peer that just came online.
+  /// Apply an application-layer ACK from a specific authenticated peer.
+  Future<void> _handleApplicationAck(
+    String peerId,
+    String ackId, {
+    required bool success,
+  }) async {
+    final complete = ackId.endsWith(':complete');
+    final baseAckId = complete
+        ? ackId.substring(0, ackId.length - ':complete'.length)
+        : ackId;
+    final pendingUdp = _pendingUdpAcks.remove(ackId);
+    pendingUdp?.retryTimer?.cancel();
+    final pendingTcp = _pendingAcks.remove(ackId);
+    final queued = await store.queuedMessageForAck(peerId, ackId);
+    final logicalId = (queued?['logical_id'] as String?) ??
+        pendingUdp?.logicalId ??
+        baseAckId;
+
+    if (complete) {
+      if (success) {
+        await store.removeQueuedMessagesForLogical(logicalId);
+        await store.db.update(
+          'messages',
+          {'delivered': 1},
+          where: 'id = ? AND outgoing = 1',
+          whereArgs: [logicalId],
+        );
+      } else {
+        await store.requeueLogicalMessages(logicalId);
+      }
+      DiagLog.add('proto', 'file $logicalId completion ACK: $success');
+      return;
+    }
+
+    if (!success) {
+      await store.requeueLogicalMessages(logicalId);
+      DiagLog.add('proto', 'negative ACK for $ackId; transfer requeued');
+      return;
+    }
+
+    final markDelivered = (queued?['mark_delivered'] as int? ?? 1) == 1 ||
+        (pendingUdp != null && pendingUdp.logicalId == pendingUdp.ackId) ||
+        (pendingTcp != null && logicalId == ackId);
+    if (queued != null) {
+      final queueId = _asInt(queued['id']);
+      if (queueId != null) {
+        if (markDelivered) {
+          await store.removeQueuedMessage(queueId);
+        } else {
+          await store.markQueueAck(queueId, true);
+        }
+      }
+    }
+    if (markDelivered) {
+      await store.db.update(
+        'messages',
+        {'delivered': 1},
+        where: 'id = ? AND outgoing = 1',
+        whereArgs: [logicalId],
+      );
+    }
+    DiagLog.add('proto', 'ACK received for $ackId');
+  }
+
+  /// Flush ACK-tracked queued frames for a peer. Rows remain queued until
+  /// the receiver ACKs them; flush success only means socket.flush() returned.
   Future<void> _flushQueue(String peerId) async {
-    final queued = await store.queuedMessages(peerId);
-    if (queued.isEmpty) return;
-    DiagLog.add('queue', 'flushing ${queued.length} queued msgs for $peerId');
-    final peer = _peers.values.where((p) => p.id == peerId).firstOrNull;
-    if (peer == null) return;
-    for (final row in queued) {
-      final id = row['id'] as int;
-      final frame = row['frame'] as Uint8List;
-      final attempts = row['attempts'] as int;
-      if (attempts >= 5) {
-        await store.removeQueuedMessage(id);
-        continue;
-      }
+    if (!_queueFlushing.add(peerId)) return;
+    try {
+      final queued = await store.queuedMessagesDue(
+        peerId,
+        DateTime.now().subtract(const Duration(seconds: 2)),
+        limit: 250,
+      );
+      if (queued.isEmpty) return;
+      final peer = _peers.values.where((p) => p.id == peerId).firstOrNull;
+      if (peer == null) return;
       final sock = await _dial(peer);
-      if (sock == null) break;
-      try {
-        sock.add(frame);
-        await sock.flush();
-        await store.removeQueuedMessage(id);
-        DiagLog.add('queue', 'delivered queued msg $id');
-      } catch (_) {
-        await store.incrementQueueAttempt(id);
-        break;
+      if (sock == null) return;
+      DiagLog.add('queue', 'retrying ${queued.length} queued frames for $peerId');
+      for (final row in queued) {
+        final id = _asInt(row['id']);
+        final frame = row['frame'];
+        if (id == null || frame is! Uint8List) continue;
+        try {
+          sock.add(frame);
+          await sock.flush();
+          await store.markQueueAttempt(id);
+        } catch (e) {
+          await store.markQueueAttempt(id);
+          DiagLog.add('queue', 'queued frame $id failed: $e');
+          break;
+        }
       }
+    } catch (e) {
+      DiagLog.add('queue', 'flush failed for $peerId: $e');
+    } finally {
+      _queueFlushing.remove(peerId);
     }
   }
 
@@ -566,6 +659,30 @@ class LanEngine {
 
   Future<void> _onFrame(
       Socket sock, String? dialPeerId, Uint8List frame) async {
+    try {
+      await _onFrameUnsafe(sock, dialPeerId, frame);
+    } catch (e, st) {
+      DiagLog.add('proto', 'malformed frame dropped: $e');
+      if (kDebugMode) {
+        // Keep the stack available in debug diagnostics without affecting LAN traffic.
+        assert(() {
+          debugPrintStack(stackTrace: st, label: 'Lantern protocol frame');
+          return true;
+        }());
+      }
+    }
+  }
+
+  String? _peerIdForSocket(Socket sock, String? dialPeerId) {
+    if (dialPeerId != null && dialPeerId.isNotEmpty) return dialPeerId;
+    for (final entry in _sockets.entries) {
+      if (identical(entry.value, sock)) return entry.key;
+    }
+    return null;
+  }
+
+  Future<void> _onFrameUnsafe(
+      Socket sock, String? dialPeerId, Uint8List frame) async {
     Map<String, dynamic> json;
     try {
       json = decodeJson(frame);
@@ -649,29 +766,26 @@ class LanEngine {
       if (key == null) return;
       try {
         final plain = await PayloadBox.open(key, base64Decode(blob));
-        // Send delivery ack so the sender knows the message was received.
-        final msgId = plain['id'] as String?;
-        if (msgId != null && msgId.isNotEmpty) {
-          try {
-            sock.add(LanternProtocol.encodeFrame({
-              't': 'ack',
-              'id': msgId,
-            }));
-          } catch (_) {}
+        if (!_eventCtrl.isClosed) {
+          final transportAckId = (plain['_ack'] is String)
+              ? plain['_ack'] as String
+              : (plain['id'] is String ? plain['id'] as String : null);
+          _eventCtrl.add(LanEvent(from, plain, ackId: transportAckId));
         }
-        if (!_eventCtrl.isClosed) _eventCtrl.add(LanEvent(from, plain));
       } catch (_) {
         // bad MAC => drop
       }
       return;
     }
     if (t == 'ack') {
-      final msgId = json['id'] as String? ?? '';
-      if (msgId.isEmpty) return;
-      _pendingAcks.remove(msgId);
-      await store.db.update('messages', {'delivered': 1},
-          where: 'id = ?', whereArgs: [msgId]);
-      DiagLog.add('proto', 'ack received for $msgId');
+      final from = _peerIdForSocket(sock, dialPeerId) ?? '';
+      final msgId = json['id'] is String ? json['id'] as String : '';
+      if (from.isEmpty || msgId.isEmpty) return;
+      await _handleApplicationAck(
+        from,
+        msgId,
+        success: json['ok'] is bool ? json['ok'] as bool : true,
+      );
       return;
     }
     // ---- Sync: same-account devices exchange message history ----
@@ -847,111 +961,179 @@ class LanEngine {
   }
 
   /// Send an encrypted payload to a peer. Requires trusted pin.
-  /// Tries UDP first for small payloads (fast, no TCP slow start).
-  /// Falls back to TCP for large payloads or if UDP fails.
-  /// Queues message for store-and-forward if peer is offline.
+  /// Tries UDP first for small payloads and falls back to peer-specific TCP.
   Future<bool> sendTo(LanPeer peer, Map<String, dynamic> payload) async {
     final known = await store.getPeer(peer.id);
     if (known == null || !known.trusted) return false;
     final key = await _sessionFor(peer.id, known.pubB64);
     if (key == null) return false;
+    final logicalId = payload['id'] is String ? payload['id'] as String : null;
+    if (logicalId == null) return false;
+    final ackId = payload['_ack'] is String
+        ? payload['_ack'] as String
+        : logicalId;
+    final isChunk = ackId != logicalId;
     final sealed = await PayloadBox.seal(key, payload);
-    final msgId = payload['id'] as String?;
     final frame = LanternProtocol.encodeFrame({
       't': 'payload',
       'from': me.id,
       'blob': base64Encode(sealed),
     });
 
-    // Try UDP for small payloads if peer has a UDP port
+    // Persist first. The queue is removed only after an application ACK, not
+    // merely after socket.flush() returns.
+    await store.queueMessage(
+      peer.id,
+      frame,
+      ackId: ackId,
+      logicalId: logicalId,
+      markDelivered: !isChunk,
+    );
+
     if (peer.udpPort > 0 &&
         sealed.length <= LanternProtocol.udpMaxPayload &&
-        msgId != null &&
         _udpSocket != null) {
       DiagLog.add('udp',
-          'send $msgId ${sealed.length}B to ${peer.host}:${peer.udpPort}');
-      final ok = await _sendUdp(peer, sealed, msgId);
-      if (!ok) {
-        // Queue for store-and-forward
-        await store.queueMessage(peer.id, frame);
-        DiagLog.add('queue', 'queued $msgId for ${peer.id}');
-      }
-      return ok;
+          'send $ackId ${sealed.length}B to ${peer.host}:${peer.udpPort}');
+      await _sendUdp(peer, sealed, ackId, logicalId);
+    } else {
+      await _sendTcp(peer, frame, ackId);
+    }
+    return true;
+  }
+
+  /// ACK an application event after the receiver has durably accepted it.
+  /// [complete] is used only for the final file-transfer result.
+  Future<void> acknowledgeEvent(
+    LanEvent event, {
+    required bool success,
+    bool complete = false,
+  }) async {
+    final baseId = complete
+        ? (event.json['id'] is String ? event.json['id'] as String : null)
+        : (event.ackId ??
+            (event.json['id'] is String
+                ? event.json['id'] as String
+                : null));
+    if (baseId == null || baseId.isEmpty) return;
+    final ackId = complete ? '$baseId:complete' : baseId;
+
+    final host = event.udpHost;
+    final udpPort = event.udpPort;
+    final socket = _udpSocket;
+    if (host != null && udpPort != null && udpPort > 0 && socket != null) {
+      socket.send(
+        _buildUdpAck(ackId, success: success),
+        InternetAddress(host),
+        udpPort,
+      );
+      return;
     }
 
-    // Fall back to TCP
-    final ok = await _sendTcp(frame, msgId);
-    if (!ok) {
-      await store.queueMessage(peer.id, frame);
-      DiagLog.add('queue', 'queued $msgId for ${peer.id}');
+    final peer = _peers.values.where((p) => p.id == event.peerId).firstOrNull;
+    Socket? sock = _sockets[event.peerId];
+    if (sock == null && peer != null) sock = await _dial(peer);
+    if (sock == null) return;
+    try {
+      sock.add(LanternProtocol.encodeFrame({
+        't': 'ack',
+        'id': ackId,
+        'ok': success,
+      }));
+      await sock.flush();
+    } catch (e) {
+      DiagLog.add('proto', 'failed to ACK $ackId: $e');
     }
-    return ok;
   }
 
   /// Send via UDP with application-level ACK/retry.
   Future<bool> _sendUdp(
-      LanPeer peer, Uint8List sealed, String msgId) async {
+    LanPeer peer,
+    Uint8List sealed,
+    String ackId,
+    String logicalId,
+  ) async {
     final addr = InternetAddress(peer.host);
     final port = peer.udpPort;
-    final packet = _buildUdpData(msgId, sealed);
+    final packet = _buildUdpData(ackId, sealed);
+    final socket = _udpSocket;
+    if (socket == null) return false;
 
-    _udpSocket!.send(packet, addr, port);
-
-    // Start ACK wait with retries
+    socket.send(packet, addr, port);
     final pending = _UdpPendingAck(
-      msgId: msgId,
+      ackId: ackId,
+      logicalId: logicalId,
       addr: addr,
       port: port,
       data: packet,
       attempts: 1,
     );
+    final previous = _pendingUdpAcks.remove(ackId);
+    previous?.retryTimer?.cancel();
     pending.retryTimer = Timer.periodic(
       const Duration(milliseconds: LanternProtocol.udpRetryMs),
       (_) {
         if (pending.attempts >= LanternProtocol.udpMaxRetries) {
-          DiagLog.add('udp',
-              'max retries for $msgId, falling back to TCP');
-          _pendingUdpAcks.remove(msgId);
+          DiagLog.add('udp', 'max retries for $ackId, falling back to TCP');
+          _pendingUdpAcks.remove(ackId);
           pending.retryTimer?.cancel();
-          // Build TCP frame and fall back
           final frame = LanternProtocol.encodeFrame({
             't': 'payload',
             'from': me.id,
             'blob': base64Encode(sealed),
           });
-          _sendTcp(frame, msgId);
+          unawaited(_sendTcp(peer, frame, ackId));
           return;
         }
-        _udpSocket!.send(pending.data, pending.addr, pending.port);
+        final currentSocket = _udpSocket;
+        if (currentSocket == null) {
+          _pendingUdpAcks.remove(ackId);
+          pending.retryTimer?.cancel();
+          return;
+        }
+        currentSocket.send(pending.data, pending.addr, pending.port);
         pending.attempts++;
-        DiagLog.add(
-            'udp', 'retry $msgId attempt ${pending.attempts}');
+        DiagLog.add('udp', 'retry $ackId attempt ${pending.attempts}');
       },
     );
-    _pendingUdpAcks[msgId] = pending;
+    _pendingUdpAcks[ackId] = pending;
+    await store.markQueueAttemptForAck(peer.id, ackId);
     return true;
   }
 
-  /// Send via TCP (existing path).
-  Future<bool> _sendTcp(Uint8List frame, String? msgId) async {
-    // Find any connected socket to send on
-    if (_sockets.isEmpty) return false;
-    final sock = _sockets.values.first;
+  /// Send over the TCP socket belonging to [peer], never an arbitrary peer.
+  Future<bool> _sendTcp(
+    LanPeer peer,
+    Uint8List frame,
+    String ackId,
+  ) async {
+    Socket? sock = _sockets[peer.id];
+    if (sock == null) {
+      sock = await _dial(peer);
+      if (sock == null) return false;
+    }
     try {
       sock.add(frame);
       await sock.flush();
-      if (msgId != null) {
-        _pendingAcks[msgId] = DateTime.now();
-      }
+      _pendingAcks[ackId] = DateTime.now();
+      await store.markQueueAttemptForAck(peer.id, ackId);
       return true;
-    } catch (_) {
+    } catch (e) {
+      if (_sockets[peer.id] == sock) _sockets.remove(peer.id);
+      try {
+        sock.destroy();
+      } catch (_) {}
+      DiagLog.add('proto', 'TCP send to ${peer.id} failed: $e');
       return false;
     }
   }
 
-  /// Build UDP data packet: [msgIdLen 1B][msgId NB][type 1B][len 2B][payload].
+  /// Build UDP data packet: [msgIdLen 1B][msgId NB][type 1B][length 2B].
   Uint8List _buildUdpData(String msgId, Uint8List payload) {
     final idBytes = utf8.encode(msgId);
+    if (idBytes.isEmpty || idBytes.length > 255 || payload.length > 65535) {
+      throw ArgumentError('Invalid UDP data header');
+    }
     final out = BytesBuilder();
     out.add([idBytes.length]);
     out.add(idBytes);
@@ -961,13 +1143,16 @@ class LanEngine {
     return out.toBytes();
   }
 
-  /// Build UDP ACK packet: [msgIdLen 1B][msgId NB][type 1B][0,0].
-  Uint8List _buildUdpAck(String msgId) {
+  /// Build UDP ACK packet: [msgIdLen 1B][msgId NB][type 1B][ok 1B][0].
+  Uint8List _buildUdpAck(String msgId, {bool success = true}) {
     final idBytes = utf8.encode(msgId);
+    if (idBytes.isEmpty || idBytes.length > 255) {
+      throw ArgumentError.value(msgId, 'msgId', 'UDP ACK id must be 1-255 bytes');
+    }
     final out = BytesBuilder();
     out.add([idBytes.length]);
     out.add(idBytes);
-    out.add([LanternProtocol.udpTypeAck, 0, 0]);
+    out.add([LanternProtocol.udpTypeAck, success ? 1 : 0, 0]);
     return out.toBytes();
   }
 
@@ -976,7 +1161,7 @@ class LanEngine {
   (String, int, int)? _parseUdpHeader(List<int> data) {
     if (data.length < 4) return null;
     final idLen = data[0];
-    if (data.length < 1 + idLen + 3) return null;
+    if (idLen < 1 || idLen > 255 || data.length < 1 + idLen + 3) return null;
     final msgId = utf8.decode(data.sublist(1, 1 + idLen), allowMalformed: true);
     final type = data[1 + idLen];
     final offset = 1 + idLen + 3; // after [len][id][type][payloadLen 2B]
@@ -995,14 +1180,12 @@ class LanEngine {
     final (msgId, type, payloadOffset) = parsed;
 
     if (type == LanternProtocol.udpTypeAck) {
-      // ACK received — cancel retry timer, mark delivered
-      final pending = _pendingUdpAcks.remove(msgId);
-      pending?.retryTimer?.cancel();
-      if (pending != null) {
-        store.db.update('messages', {'delivered': 1},
-            where: 'id = ?', whereArgs: [pending.msgId]);
-        DiagLog.add('udp', 'ACK received for ${pending.msgId}');
-      }
+      final success = data[payloadOffset - 1] == 1;
+      unawaited(_handleUdpAck(
+        msgId,
+        senderHost: dg.address.address,
+        success: success,
+      ));
       return;
     }
 
@@ -1046,15 +1229,30 @@ class LanEngine {
         }
       }
 
-      // Regular encrypted payload — send ACK and process
-      _udpSocket!.send(
-          Uint8List.fromList(_buildUdpAck(msgId)),
-          dg.address,
-          dg.port);
-      DiagLog.add('udp',
-          'DATA received from ${dg.address.address}, ACK sent');
-      _processPayload(payload, dg.address.address);
+      // Receipt is not acknowledged here. The application ACKs only after
+      // validation and durable storage complete.
+      DiagLog.add('udp', 'DATA received from ${dg.address.address}');
+      _processPayload(
+        payload,
+        dg.address.address,
+        udpHost: dg.address.address,
+        udpPort: dg.port,
+      );
     }
+  }
+
+  /// Handle an ACK datagram and map its source address to an authenticated peer.
+  Future<void> _handleUdpAck(
+    String ackId, {
+    required String senderHost,
+    required bool success,
+  }) async {
+    final peerId = _findPeerByHost(senderHost);
+    if (peerId == null) {
+      DiagLog.add('udp', 'ACK from unknown host $senderHost dropped');
+      return;
+    }
+    await _handleApplicationAck(peerId, ackId, success: success);
   }
 
   /// Find peer ID by IP address.
@@ -1074,7 +1272,11 @@ class LanEngine {
 
   /// Process an encrypted payload (shared by TCP and UDP paths).
   Future<void> _processPayload(
-      List<int> sealed, String senderHost) async {
+    List<int> sealed,
+    String senderHost, {
+    String? udpHost,
+    int? udpPort,
+  }) async {
     // We need to find who sent this. For UDP, we only have the IP.
     // Look up the peer by IP address.
     String? from;
@@ -1113,7 +1315,16 @@ class LanEngine {
       final plain =
           await PayloadBox.open(key, Uint8List.fromList(sealed));
       if (!_eventCtrl.isClosed) {
-        _eventCtrl.add(LanEvent(from, plain));
+        final transportAckId = (plain['_ack'] is String)
+            ? plain['_ack'] as String
+            : (plain['id'] is String ? plain['id'] as String : null);
+        _eventCtrl.add(LanEvent(
+          from,
+          plain,
+          ackId: transportAckId,
+          udpHost: udpHost,
+          udpPort: udpPort,
+        ));
       }
     } catch (e) {
       DiagLog.add('udp', 'decrypt failed: $e');
@@ -1280,6 +1491,32 @@ class LanEngine {
     _syncCooldown.clear();
   }
 
+  /// Re-scan mDNS for services. Called from iOS background fetch
+  /// to rediscover peers that appeared while the app was suspended.
+  Future<void> refreshDiscovery() async {
+    if (_discovery == null) return;
+    DiagLog.add('mdns', 'refreshDiscovery: re-scanning');
+    // Re-trigger discovery by stopping and restarting
+    try {
+      await stopDiscovery(_discovery!);
+    } catch (_) {}
+    try {
+      _discovery = await startDiscovery(LanternProtocol.serviceType,
+          autoResolve: true, ipLookupType: IpLookupType.v4);
+      _discovery!.addServiceListener(_onServiceEvent);
+      for (final s in _discovery!.services) {
+        _onService(s);
+      }
+      DiagLog.add('mdns', 'refreshDiscovery: found ${_discovery!.services.length} services');
+    } catch (e) {
+      DiagLog.add('mdns', 'refreshDiscovery failed: $e');
+    }
+    // Flush queued messages for any peers that came online
+    for (final peer in _peers.values) {
+      await _flushQueue(peer.id);
+    }
+  }
+
   void dispose() {
     unawaited(stop());
     _peerCtrl.close();
@@ -1288,9 +1525,10 @@ class LanEngine {
   }
 }
 
-/// Tracks a pending UDP message waiting for ACK.
+  /// Tracks a pending UDP message waiting for ACK.
 class _UdpPendingAck {
-  final String msgId;
+  final String ackId;
+  final String logicalId;
   final InternetAddress addr;
   final int port;
   final Uint8List data;
@@ -1298,7 +1536,8 @@ class _UdpPendingAck {
   Timer? retryTimer;
 
   _UdpPendingAck({
-    required this.msgId,
+    required this.ackId,
+    required this.logicalId,
     required this.addr,
     required this.port,
     required this.data,
